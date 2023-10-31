@@ -150,22 +150,14 @@ protected:
                             task_iterator task_begin, task_iterator task_end );
 
   void neo_exc_vxc_local_work_( const value_type* P1s, int64_t ldp1s,
-                                 const value_type* P2s, int64_t ldp2s,
-                                 const value_type* P2z, int64_t ldp2z,
-                                 value_type* VXC1s, int64_t ldvxc1s,
-                                 value_type* VXC2s, int64_t ldvxc2s,
-                                 value_type* VXC2z, int64_t ldvxc2z,
-                                 value_type* EXC1, value_type* EXC2, value_type *N_EL );
-
-  void neo_exc_vxc_local_work_( const value_type* P1s, int64_t ldp1s,
-                                 const value_type* P1z, int64_t ldp1z,
-                                 const value_type* P2s, int64_t ldp2s,
-                                 const value_type* P2z, int64_t ldp2z,
-                                 value_type* VXC1s, int64_t ldvxc1s,
-                                 value_type* VXC1z, int64_t ldvxc1z,
-                                 value_type* VXC2s, int64_t ldvxc2s,
-                                 value_type* VXC2z, int64_t ldvxc2z,
-                                 value_type* EXC1, value_type* EXC2, value_type *N_EL );
+                                const value_type* P1z, int64_t ldp1z,
+                                const value_type* P2s, int64_t ldp2s,
+                                const value_type* P2z, int64_t ldp2z,
+                                value_type* VXC1s, int64_t ldvxc1s,
+                                value_type* VXC1z, int64_t ldvxc1z,
+                                value_type* VXC2s, int64_t ldvxc2s,
+                                value_type* VXC2z, int64_t ldvxc2z,
+                                value_type* EXC1, value_type* EXC2, value_type *N_EL );
                             
   // Implemetation details of exc_grad
   void exc_grad_local_work_( const value_type* Ps, int64_t ldps, const value_type* Pz, int64_t ldpz,

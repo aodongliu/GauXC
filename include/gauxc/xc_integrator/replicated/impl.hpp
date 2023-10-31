@@ -173,7 +173,7 @@ typename ReplicatedXCIntegrator<MatrixType>::exc_vxc_type_neo_rks
   value_type  elec_EXC;
   value_type  prot_EXC;
 
-  pimpl_->neo_eval_exc_vxc( elec_Ps.rows(), elec_Ps.cols(), prot_Ps.rows(), prot_Ps.cols(),
+  pimpl_->eval_neo_exc_vxc( elec_Ps.rows(), elec_Ps.cols(), prot_Ps.rows(), prot_Ps.cols(),
                             elec_Ps.data(), elec_Ps.rows(),
                             prot_Ps.data(), prot_Ps.rows(),
                             prot_Pz.data(), prot_Pz.rows(),
@@ -199,7 +199,7 @@ typename ReplicatedXCIntegrator<MatrixType>::exc_vxc_type_neo_uks
   value_type  elec_EXC;
   value_type  prot_EXC;
 
-  pimpl_->neo_eval_exc_vxc( elec_Ps.rows(), elec_Ps.cols(), prot_Ps.rows(), prot_Ps.cols(),
+  pimpl_->eval_neo_exc_vxc( elec_Ps.rows(), elec_Ps.cols(), prot_Ps.rows(), prot_Ps.cols(),
                             elec_Ps.data(), elec_Ps.rows(),
                             elec_Pz.data(), elec_Pz.rows(),
                             prot_Ps.data(), prot_Ps.rows(),

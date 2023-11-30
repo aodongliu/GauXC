@@ -74,7 +74,7 @@ public:
   exc_vxc_type_uks  eval_exc_vxc ( const MatrixType&, const MatrixType&,
                                    const IntegratorSettingsXC& = IntegratorSettingsXC{} );
   exc_vxc_type_gks  eval_exc_vxc ( const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,
-                                   const IntegratorSettingsXC& = IntegratorSettingsXC{});
+                                   const IntegratorSettingsXC& = IntegratorSettingsXC{} );
 
   exc_vxc_type_neo_rks neo_eval_exc_vxc( const MatrixType&, const MatrixType&, const MatrixType&,
                                          const IntegratorSettingsXC& = IntegratorSettingsXC{} );
@@ -83,7 +83,6 @@ public:
 
   exc_grad_type eval_exc_grad( const MatrixType&, const IntegratorSettingsXC& = IntegratorSettingsXC{} );
   exc_grad_type eval_exc_grad( const MatrixType&, const MatrixType&, const IntegratorSettingsXC& = IntegratorSettingsXC{} );
-
   exx_type      eval_exx     ( const MatrixType&, 
                                const IntegratorSettingsEXX& = IntegratorSettingsEXX{} );
 

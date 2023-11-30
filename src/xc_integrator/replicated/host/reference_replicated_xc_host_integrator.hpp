@@ -157,7 +157,8 @@ protected:
                                 value_type* VXC1z, int64_t ldvxc1z,
                                 value_type* VXC2s, int64_t ldvxc2s,
                                 value_type* VXC2z, int64_t ldvxc2z,
-                                value_type* EXC1, value_type* EXC2, value_type *N_EL );
+                                value_type* EXC1, value_type* EXC2, value_type *N_EL,
+                                const IntegratorSettingsXC& ks_settings );
                             
   // Implemetation details of exc_grad
   void exc_grad_local_work_( const value_type* Ps, int64_t ldps, const value_type* Pz, int64_t ldpz,

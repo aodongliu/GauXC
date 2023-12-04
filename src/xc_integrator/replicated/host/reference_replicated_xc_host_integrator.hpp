@@ -76,25 +76,25 @@ protected:
 
   /// NEO RKS Electron UKS Proton EXC/VXC
   void neo_eval_exc_vxc_( int64_t m1, int64_t n1, int64_t m2, int64_t n2, 
-                          const value_type* P1s, int64_t ldp1s,
-                          const value_type* P2s, int64_t ldp2s,
-                          const value_type* P2z, int64_t ldp2z,
-                          value_type* VXC1s, int64_t ldvxc1s,
-                          value_type* VXC2s, int64_t ldvxc2s,
-                          value_type* VXC2z, int64_t ldvxc2z,
-                          value_type* EXC1, value_type* EXC2, const IntegratorSettingsXC& ks_settings ) override;
+                          const value_type* Ps, int64_t ldps,
+                          const value_type* prot_Ps, int64_t prot_ldps,
+                          const value_type* prot_Pz, int64_t prot_ldpz,
+                          value_type* VXCs, int64_t ldvxcs,
+                          value_type* prot_VXCs, int64_t prot_ldvxcs,
+                          value_type* prot_VXCz, int64_t prot_ldvxcz,
+                          value_type* EXC1, value_type* prot_EXC, const IntegratorSettingsXC& ks_settings ) override;
 
   /// NEO UKS Electron UKS Proton EXC/VXC
   void neo_eval_exc_vxc_( int64_t m1, int64_t n1, int64_t m2, int64_t n2, 
-                          const value_type* P1s, int64_t ldp1s,
-                          const value_type* P1z, int64_t ldp1z,
-                          const value_type* P2s, int64_t ldp2s,
-                          const value_type* P2z, int64_t ldp2z,
-                          value_type* VXC1s, int64_t ldvxc1s,
-                          value_type* VXC1z, int64_t ldvxc1z,
-                          value_type* VXC2s, int64_t ldvxc2s,
-                          value_type* VXC2z, int64_t ldvxc2z,
-                          value_type* EXC1, value_type* EXC2, const IntegratorSettingsXC& ks_settings ) override;
+                          const value_type* Ps, int64_t ldps,
+                          const value_type* Pz, int64_t ldpz,
+                          const value_type* prot_Ps, int64_t prot_ldps,
+                          const value_type* prot_Pz, int64_t prot_ldpz,
+                          value_type* VXCs, int64_t ldvxcs,
+                          value_type* VXCz, int64_t ldvxcz,
+                          value_type* prot_VXCs, int64_t prot_ldvxcs,
+                          value_type* prot_VXCz, int64_t prot_ldvxcz,
+                          value_type* EXC1, value_type* prot_EXC, const IntegratorSettingsXC& ks_settings ) override;
 
   /// RKS EXC Gradient
   void eval_exc_grad_( int64_t m, int64_t n, const value_type* P, int64_t ldp, 
@@ -149,15 +149,15 @@ protected:
                             const IntegratorSettingsXC& ks_settings,
                             task_iterator task_begin, task_iterator task_end );
 
-  void neo_exc_vxc_local_work_( const value_type* P1s, int64_t ldp1s,
-                                const value_type* P1z, int64_t ldp1z,
-                                const value_type* P2s, int64_t ldp2s,
-                                const value_type* P2z, int64_t ldp2z,
-                                value_type* VXC1s, int64_t ldvxc1s,
-                                value_type* VXC1z, int64_t ldvxc1z,
-                                value_type* VXC2s, int64_t ldvxc2s,
-                                value_type* VXC2z, int64_t ldvxc2z,
-                                value_type* EXC1, value_type* EXC2, value_type *N_EL,
+  void neo_exc_vxc_local_work_( const value_type* Ps, int64_t ldps,
+                                const value_type* Pz, int64_t ldpz,
+                                const value_type* prot_Ps, int64_t prot_ldps,
+                                const value_type* prot_Pz, int64_t prot_ldpz,
+                                value_type* VXCs, int64_t ldvxcs,
+                                value_type* VXCz, int64_t ldvxcz,
+                                value_type* prot_VXCs, int64_t prot_ldvxcs,
+                                value_type* prot_VXCz, int64_t prot_ldvxcz,
+                                value_type* EXC1, value_type* prot_EXC, value_type *N_EL,
                                 const IntegratorSettingsXC& ks_settings );
                             
   // Implemetation details of exc_grad

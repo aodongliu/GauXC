@@ -98,8 +98,10 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
   });
 
 
-}           
-  
+}
+
+
+
 template <typename ValueType>
 void ReferenceReplicatedXCHostIntegrator<ValueType>::
   neo_eval_exc_vxc_( int64_t m1, int64_t n1, int64_t m2, int64_t n2, 
@@ -1201,6 +1203,6 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     VXCs, ldvxcs, VXCz, ldvxcz, nullptr, 0, nullptr, 0,
     EXC, ks_settings);
 
-}
+} 
 
 } // namespace GauXC::detail

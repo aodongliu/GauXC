@@ -56,7 +56,7 @@ struct XCHostData {
   std::vector<F> tlapl;
 
   // For protonic density in NEO
-  std::vector<F> protonic_eps;
+  std::vector<F> epc;
   std::vector<F> protonic_vrho;
  
   std::vector<F> protonic_zmat;

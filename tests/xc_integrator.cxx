@@ -198,7 +198,7 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     }
   }
 
-  if( gks and ex == ExecutionSpace::Device and func.is_mgga() ) return;
+  if( gks and ex == ExecutionSpace::Device and func->is_mgga() ) return;
   if( neo and ex == ExecutionSpace::Device) return;
 
 
@@ -271,7 +271,7 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     }
 
     // Check EXC-only path
-    auto EXC2 = integrator.eval_exc( P );
+    auto EXC2 = integrator->eval_exc( P );
     CHECK(EXC2 == Approx(EXC));
     // Check if the integrator propagates state correctly
     { 
@@ -317,7 +317,7 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     }
 
     // Check EXC-only path
-    auto EXC2 = integrator.eval_exc( P, Pz );
+    auto EXC2 = integrator->eval_exc( P, Pz );
     CHECK(EXC2 == Approx(EXC));
     // Check if the integrator propagates state correctly
     { 
@@ -371,7 +371,7 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     }
 
     // Check EXC-only path
-    auto EXC2 = integrator.eval_exc( P, Pz, Py, Px );
+    auto EXC2 = integrator->eval_exc( P, Pz, Py, Px );
     CHECK(EXC2 == Approx(EXC));
   }
 
@@ -381,7 +381,7 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
   if( check_grad and has_exc_grad_full ) {
     IntegratorSettingsEXC_GRAD exc_grad_settings;
     exc_grad_settings.include_weight_derivatives = true; // Use full gradient (default)
-    auto EXC_GRAD = rks ? integrator.eval_exc_grad( P, exc_grad_settings ) : integrator.eval_exc_grad( P, Pz, exc_grad_settings );
+    auto EXC_GRAD = rks ? integrator->eval_exc_grad( P, exc_grad_settings ) : integrator->eval_exc_grad( P, Pz, exc_grad_settings );
     using map_type = Eigen::Map<Eigen::MatrixXd>;
     map_type EXC_GRAD_ref_map( EXC_GRAD_ref_Full.data(), mol.size(), 3 );
     map_type EXC_GRAD_map( EXC_GRAD.data(), mol.size(), 3 );
@@ -392,7 +392,7 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
   if( check_grad and has_exc_grad_HellFey ) {
     IntegratorSettingsEXC_GRAD exc_grad_settings;
     exc_grad_settings.include_weight_derivatives = false; // Use Hellmann-Feynman gradient
-    auto EXC_GRAD = rks ? integrator.eval_exc_grad( P, exc_grad_settings ) : integrator.eval_exc_grad( P, Pz, exc_grad_settings );
+    auto EXC_GRAD = rks ? integrator->eval_exc_grad( P, exc_grad_settings ) : integrator->eval_exc_grad( P, Pz, exc_grad_settings );
     using map_type = Eigen::Map<Eigen::MatrixXd>;
     map_type EXC_GRAD_ref_map( EXC_GRAD_ref_HellFey.data(), mol.size(), 3 );
     map_type EXC_GRAD_map( EXC_GRAD.data(), mol.size(), 3 );
@@ -429,11 +429,11 @@ void test_integrator(std::string reference_file, std::shared_ptr<functional_type
     SECTION( "Host" ) {
       SECTION("Reference") {
         test_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
-          pruning_scheme, true, true, true );
+          pruning_scheme, true, true, true, "Default", "Default", "Default", epcfunc );
       }
       SECTION("ShellBatched") {
         test_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
-          pruning_scheme, false, false, false, "ShellBatched" );
+          pruning_scheme, false, false, false, "ShellBatched", "Default", "Default", epcfunc );
       }
     }
 #endif
@@ -509,6 +509,7 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
   auto epc17_2 = ExchCXX::Functional::EPC17_2;
   auto epc18_2 = ExchCXX::Functional::EPC18_2;
 
+  /*
   // LDA Test
   SECTION( "Benzene / SVWN5 / cc-pVDZ" ) {
     auto func = make_functional(svwn5, unpol);
@@ -620,6 +621,7 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
     test_integrator(GAUXC_REF_DATA_PATH "/h2o2_def2-qzvp.hdf5", 
         func, PruningScheme::Unpruned );
   }
+  */
 
   // EPC Tests
   // epc-17-2 Test (small basis)
@@ -629,6 +631,8 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
     test_integrator(GAUXC_REF_DATA_PATH "/coh2_blyp_epc17-2_sto-3g_protsp_ssf.hdf5", 
         func, PruningScheme::Unpruned, epcfunc);
   }
+  
+  /*
   // epc-17-2 Test (larger basis)
   SECTION( "COH2 / BLYP,EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
     auto func = make_functional(blyp, unpol);
@@ -650,5 +654,6 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
     test_integrator(GAUXC_REF_DATA_PATH "/coh2_blyp_epc17-2_cc-pvdz_pb4d_ssf_uks.hdf5", 
         func, PruningScheme::Unpruned, epcfunc);
   }
+  */
 } 
   

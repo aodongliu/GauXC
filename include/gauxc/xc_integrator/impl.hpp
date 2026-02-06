@@ -94,7 +94,6 @@ typename XCIntegrator<MatrixType>::exc_vxc_type_neo_uks
   return pimpl_->neo_eval_exc_vxc(elec_Ps, elec_Pz, prot_Ps, prot_Pz, ks_settings);
 };
 
-
 template <typename MatrixType>
 typename XCIntegrator<MatrixType>::exc_grad_type
   XCIntegrator<MatrixType>::eval_exc_grad( const MatrixType& P, const IntegratorSettingsXC& ks_settings ) {

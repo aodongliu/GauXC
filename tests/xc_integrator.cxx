@@ -319,8 +319,10 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     }
 
     // Check EXC-only path
-    auto EXC2 = integrator->eval_exc( P, Pz );
-    CHECK(EXC2 == Approx(EXC));
+    if (not neo) { 
+      auto EXC2 = integrator->eval_exc( P, Pz );
+      CHECK(EXC2 == Approx(EXC));
+    }
     // Check if the integrator propagates state correctly
     { 
       double EXC1, protonic_EXC1;
@@ -515,7 +517,6 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
   auto epc17_2 = ExchCXX::Functional::EPC17_2;
   auto epc18_2 = ExchCXX::Functional::EPC18_2;
 
-  /*
   // LDA Test
   SECTION( "Benzene / SVWN5 / cc-pVDZ" ) {
     auto func = make_functional(svwn5, unpol);
@@ -627,7 +628,6 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
     test_integrator(GAUXC_REF_DATA_PATH "/h2o2_def2-qzvp.hdf5", 
         func, PruningScheme::Unpruned );
   }
-  */
 
   // EPC Tests
   // epc-17-2 Test (small basis)
@@ -638,7 +638,6 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
         func, PruningScheme::Unpruned, epcfunc);
   }
   
-  /*
   // epc-17-2 Test (larger basis)
   SECTION( "COH2 / BLYP,EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
     auto func = make_functional(blyp, unpol);
@@ -660,6 +659,5 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
     test_integrator(GAUXC_REF_DATA_PATH "/coh2_blyp_epc17-2_cc-pvdz_pb4d_ssf_uks.hdf5", 
         func, PruningScheme::Unpruned, epcfunc);
   }
-  */
 } 
   

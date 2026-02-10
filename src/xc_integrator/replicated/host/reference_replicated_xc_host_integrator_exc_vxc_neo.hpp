@@ -13,77 +13,12 @@
 #include "host/blas.hpp"
 #include <stdexcept>
 
-namespace GauXC  {
-namespace detail {
-
-template <typename ValueType>
-void ReferenceReplicatedXCHostIntegrator<ValueType>::
-  neo_eval_exc_vxc_( int64_t elec_m, int64_t elec_n, int64_t prot_m, int64_t prot_n, 
-                     const value_type* elec_Ps, int64_t elec_ldps,
-                     const value_type* prot_Ps, int64_t prot_ldps,
-                     const value_type* prot_Pz, int64_t prot_ldpz,
-                     value_type* elec_VXCs,     int64_t elec_ldvxcs,
-                     value_type* prot_VXCs,     int64_t prot_ldvxcs,
-                     value_type* prot_VXCz,     int64_t prot_ldvxcz,
-                     value_type* elec_EXC,  value_type* prot_EXC, const IntegratorSettingsXC& settings){
-  
-  const auto& elec_basis = this->load_balancer_->basis();
-  const auto& prot_basis = this->load_balancer_->protonic_basis();
-
-  // Check that P / VXC are sane
-  const int64_t elec_nbf = elec_basis.nbf();
-  const int64_t prot_nbf = prot_basis.nbf();
-
-  if( elec_m != elec_n   | prot_m != prot_n)
-    GAUXC_GENERIC_EXCEPTION("P/VXC Must Be Square");
-  if( elec_m != elec_nbf | prot_m != prot_nbf)
-    GAUXC_GENERIC_EXCEPTION("P/VXC Must Have Same Dimension as Basis");
-  if( elec_ldps < elec_nbf | prot_ldps < prot_nbf | prot_ldpz < prot_nbf )
-    GAUXC_GENERIC_EXCEPTION("Invalid LDP");
-  if( elec_ldvxcs < elec_nbf | prot_ldvxcs < prot_nbf | prot_ldvxcz < prot_nbf )
-    GAUXC_GENERIC_EXCEPTION("Invalid LDVXC");
-
-  // Get Tasks
-  auto& tasks = this->load_balancer_->get_tasks();
-
-  // Temporary electron count to judge integrator accuracy
-  value_type N_EL;
-  // Temporary proton count to judge integrator accuracy
-  value_type N_PROT;
-
-  // Compute Local contributions to EXC / VXC
-  this->timer_.time_op("XCIntegrator.LocalWork", [&](){
-    neo_exc_vxc_local_work_( elec_Ps,   elec_ldps,
-                             nullptr,   0,
-                             prot_Ps,   prot_ldps,
-                             prot_Pz,   prot_ldpz,
-                             elec_VXCs, elec_ldvxcs,
-                             nullptr,   0,
-                             prot_VXCs, prot_ldvxcs,
-                             prot_VXCz, prot_ldvxcz,
-                             elec_EXC,  prot_EXC, 
-                             &N_EL, &N_PROT, settings,
-                             tasks.begin(), tasks.end() );
-  });
+namespace GauXC::detail {
 
 
-  // Reduce Results
-  this->timer_.time_op("XCIntegrator.Allreduce", [&](){
-
-    if( not this->reduction_driver_->takes_host_memory() )
-      GAUXC_GENERIC_EXCEPTION("This Module Only Works With Host Reductions");
-
-    this->reduction_driver_->allreduce_inplace( elec_VXCs, elec_nbf*elec_nbf, ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( prot_VXCs, prot_nbf*prot_nbf, ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( prot_VXCz, prot_nbf*prot_nbf, ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( elec_EXC,  1,                 ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( prot_EXC,  1,                 ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( &N_EL,     1,                 ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( &N_PROT,   1,                 ReductionOp::Sum );
-
-  });
-
-}
+/**
+ *  Generic implementation of EXC/VXC for NEO RKS/UKS Electron + UKS Proton
+ */
 
 template <typename ValueType>
 void ReferenceReplicatedXCHostIntegrator<ValueType>::
@@ -109,9 +44,9 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     GAUXC_GENERIC_EXCEPTION("P/VXC Must Be Square");
   if( elec_m != elec_nbf | prot_m != prot_nbf)
     GAUXC_GENERIC_EXCEPTION("P/VXC Must Have Same Dimension as Basis");
-  if( elec_ldps < elec_nbf | elec_ldpz < elec_nbf | prot_ldps < prot_nbf | prot_ldpz < prot_nbf )
+  if( elec_ldps < elec_nbf | (elec_ldpz and elec_ldpz < elec_nbf) | prot_ldps < prot_nbf | prot_ldpz < prot_nbf)
     GAUXC_GENERIC_EXCEPTION("Invalid LDP");
-  if( elec_ldvxcs < elec_nbf | elec_ldvxcz < elec_nbf | prot_ldvxcs < prot_nbf | prot_ldvxcz < prot_nbf )
+  if( elec_ldvxcs < elec_nbf | (elec_ldvxcz and elec_ldvxcz < elec_nbf) | prot_ldvxcs < prot_nbf | prot_ldvxcz < prot_nbf)
     GAUXC_GENERIC_EXCEPTION("Invalid LDVXC");
 
   // Get Tasks
@@ -145,7 +80,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
       GAUXC_GENERIC_EXCEPTION("This Module Only Works With Host Reductions");
 
     this->reduction_driver_->allreduce_inplace( elec_VXCs, elec_nbf*elec_nbf, ReductionOp::Sum );
-    this->reduction_driver_->allreduce_inplace( elec_VXCz, elec_nbf*elec_nbf, ReductionOp::Sum );
+    if(elec_VXCz) this->reduction_driver_->allreduce_inplace( elec_VXCz, elec_nbf*elec_nbf, ReductionOp::Sum );
     this->reduction_driver_->allreduce_inplace( prot_VXCs, prot_nbf*prot_nbf, ReductionOp::Sum );
     this->reduction_driver_->allreduce_inplace( prot_VXCz, prot_nbf*prot_nbf, ReductionOp::Sum );
     this->reduction_driver_->allreduce_inplace( elec_EXC,  1,                 ReductionOp::Sum );
@@ -158,6 +93,8 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
 }
 
 
+/// Generic implementation details of EXC/VXC local work for NEO RKS/UKS Electron + UKS Proton
+/// based on null-y / zero parameters
 template <typename ValueType>
 void ReferenceReplicatedXCHostIntegrator<ValueType>::
   neo_exc_vxc_local_work_( const value_type* elec_Ps, int64_t elec_ldps,
@@ -613,6 +550,29 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
 
 }
 
+/// NEO RKS Electron UKS Proton EXC/VXC driver - delegates to generic NEO UKS Electron UKS Proton EXC/VXC implementation
+template <typename ValueType>
+void ReferenceReplicatedXCHostIntegrator<ValueType>::
+  neo_eval_exc_vxc_( int64_t elec_m, int64_t elec_n, int64_t prot_m, int64_t prot_n, 
+                     const value_type* elec_Ps, int64_t elec_ldps,
+                     const value_type* prot_Ps, int64_t prot_ldps,
+                     const value_type* prot_Pz, int64_t prot_ldpz,
+                     value_type* elec_VXCs,     int64_t elec_ldvxcs,
+                     value_type* prot_VXCs,     int64_t prot_ldvxcs,
+                     value_type* prot_VXCz,     int64_t prot_ldvxcz,
+                     value_type* elec_EXC,  value_type* prot_EXC, const IntegratorSettingsXC& settings){
+  
+  neo_eval_exc_vxc_( elec_m, elec_n, prot_m, prot_n, 
+                     elec_Ps, elec_ldps,
+                     nullptr, 0,
+                     prot_Ps, prot_ldps,
+                     prot_Pz, prot_ldpz,
+                     elec_VXCs, elec_ldvxcs,
+                     nullptr, 0,
+                     prot_VXCs, prot_ldvxcs,
+                     prot_VXCz, prot_ldvxcz,
+                     elec_EXC, prot_EXC, settings );
 
 }
-}
+
+} // namespace GauXC::detail

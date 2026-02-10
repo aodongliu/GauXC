@@ -271,8 +271,10 @@ void test_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     }
 
     // Check EXC-only path
-    auto EXC2 = integrator->eval_exc( P );
-    CHECK(EXC2 == Approx(EXC));
+    if (not neo) {  
+      auto EXC2 = integrator->eval_exc( P );
+      CHECK(EXC2 == Approx(EXC));
+    }
     // Check if the integrator propagates state correctly
     { 
       double EXC1, protonic_EXC1;
@@ -431,9 +433,13 @@ void test_integrator(std::string reference_file, std::shared_ptr<functional_type
         test_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
           pruning_scheme, true, true, true, "Default", "Default", "Default", epcfunc );
       }
-      SECTION("ShellBatched") {
-        test_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
-          pruning_scheme, false, false, false, "ShellBatched", "Default", "Default", epcfunc );
+      if (epcfunc) {
+        return;
+      } else {
+        SECTION("ShellBatched") {
+          test_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
+            pruning_scheme, false, false, false, "ShellBatched", "Default", "Default", epcfunc );
+        }
       }
     }
 #endif

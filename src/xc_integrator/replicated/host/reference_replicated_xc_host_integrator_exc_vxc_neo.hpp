@@ -11,8 +11,6 @@
 #include "integrator_util/integrator_common.hpp"
 #include "host/local_host_work_driver.hpp"
 #include "host/blas.hpp"
-#include <gauxc/external/hdf5.hpp>
-#include <highfive/H5File.hpp>
 #include <stdexcept>
 
 namespace GauXC  {
@@ -230,7 +228,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
   double EPC_WORK = 0.0;
     
   // Loop over tasks
-  const size_t ntasks = tasks.size();
+  const size_t ntasks = std::distance(task_begin, task_end);
 
   #pragma omp parallel
   {

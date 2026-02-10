@@ -388,7 +388,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     const auto xmat_fac = is_rks ? 2.0 : 1.0; // TODO Fix for spinor RKS input
     lwd->eval_xmat( mgga_dim_scal * npts, nbf, nbe, submat_map, xmat_fac, Ps, ldps, basis_eval, nbe,
       zmat, nbe, nbe_scr );
-    
+		
 
     // X matrix for Pz
     if(not is_rks) {

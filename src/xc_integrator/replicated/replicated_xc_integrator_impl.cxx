@@ -96,7 +96,7 @@ void ReplicatedXCIntegratorImpl<ValueType>::
                       int64_t ldpz,
                       value_type* VXCs, int64_t ldvxcs,
                       value_type* VXCz, int64_t ldvxcz,
-                      value_type* EXC, const IntegratorSettingsXC& ks_settings ) {
+                      value_type* EXC, const IntegratorSettingsXC& ks_settings) {
 
     eval_exc_vxc_(m,n,Ps,ldps,
                       Pz,ldpz,

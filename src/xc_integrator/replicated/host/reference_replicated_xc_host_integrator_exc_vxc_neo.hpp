@@ -44,7 +44,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     GAUXC_GENERIC_EXCEPTION("Invalid LDVXC");
 
   // Get Tasks
-  this->load_balancer_->get_tasks();
+  auto& tasks = this->load_balancer_->get_tasks();
 
   // Temporary electron count to judge integrator accuracy
   value_type N_EL;
@@ -62,7 +62,8 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
                              prot_VXCs, prot_ldvxcs,
                              prot_VXCz, prot_ldvxcz,
                              elec_EXC,  prot_EXC, 
-                             &N_EL, &N_PROT, settings  );
+                             &N_EL, &N_PROT, settings,
+                             tasks.begin(), tasks.end() );
   });
 
 
@@ -114,7 +115,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     GAUXC_GENERIC_EXCEPTION("Invalid LDVXC");
 
   // Get Tasks
-  this->load_balancer_->get_tasks();
+  auto& tasks = this->load_balancer_->get_tasks();
 
   // Temporary electron count to judge integrator accuracy
   value_type N_EL;
@@ -132,7 +133,8 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
                              prot_VXCs, prot_ldvxcs,
                              prot_VXCz, prot_ldvxcz,
                              elec_EXC,  prot_EXC,
-                             &N_EL, &N_PROT, settings  );
+                             &N_EL, &N_PROT, settings,
+                             tasks.begin(), tasks.end() );
   });
 
 
@@ -168,7 +170,8 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
                            value_type* prot_VXCz,     int64_t prot_ldvxcz,
                            value_type* elec_EXC,  value_type* prot_EXC,  
                            value_type *N_EL,      value_type *N_PROT,
-                           const IntegratorSettingsXC& settings ) {
+                           const IntegratorSettingsXC& settings,
+                           task_iterator task_begin, task_iterator task_end ) {
   
   // Determine is electronic subsystem is RKS or UKS
   const bool is_uks = (elec_Pz != nullptr) and (elec_VXCz != nullptr);

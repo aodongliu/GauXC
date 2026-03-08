@@ -39,6 +39,7 @@ double slater_radius_64(AtomicNumber _Z) {
 
   auto Z = _Z.get();
   switch(Z) {
+    case 0:  /* H  */ return pm_to_bohr(25. );
     case 1:  /* H  */ return pm_to_bohr(25. );
   //case 2:  /* He */ return pm_to_bohr(120.);
     case 3:  /* Li */ return pm_to_bohr(145.);
@@ -145,6 +146,7 @@ double slater_radii_30(AtomicNumber _Z) {
 
   auto Z = _Z.get();
   switch(Z) {
+    case 0:   /* H  */ return pm_to_bohr(53. ); 
     case 1:   /* H  */ return pm_to_bohr(53. ); 
 
     case 3:   /* Li */ return pm_to_bohr(163.); 

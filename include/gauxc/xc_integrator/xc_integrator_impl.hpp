@@ -12,6 +12,7 @@
 #pragma once
 
 #include <gauxc/xc_integrator.hpp>
+#include <iostream>
 #include <numeric>
 
 namespace GauXC  {
@@ -28,6 +29,7 @@ public:
   using exc_vxc_type_rks   = typename XCIntegrator<MatrixType>::exc_vxc_type_rks;
   using exc_vxc_type_uks   = typename XCIntegrator<MatrixType>::exc_vxc_type_uks;
   using exc_vxc_type_gks   = typename XCIntegrator<MatrixType>::exc_vxc_type_gks;
+  using exc_vxc_type_dks   = typename XCIntegrator<MatrixType>::exc_vxc_type_dks;
   using multiparticle_density = typename XCIntegrator<MatrixType>::multiparticle_density;
   using multiparticle_exc_vxc_type = typename XCIntegrator<MatrixType>::multiparticle_exc_vxc_type;
   using exc_grad_type  = typename XCIntegrator<MatrixType>::exc_grad_type;
@@ -44,11 +46,20 @@ protected:
   virtual value_type        eval_exc_     ( const MatrixType& P, const IntegratorSettingsXC& ks_settings ) = 0;
   virtual value_type        eval_exc_     ( const MatrixType& Ps, const MatrixType& Pz, const IntegratorSettingsXC& ks_settings ) = 0;
   virtual value_type        eval_exc_     ( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, const IntegratorSettingsXC& ks_settings ) = 0;
+  virtual value_type        eval_exc_     ( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, 
+                                            const MatrixType& Ps_SS, const MatrixType& Pz_SS, const MatrixType& Py_SS, const MatrixType& Px_SS, 
+                                            const MatrixType& Ps_SS_imag, const MatrixType& Pz_SS_imag, const MatrixType& Py_SS_imag, const MatrixType& Px_SS_imag,
+                                            const IntegratorSettingsXC& ks_settings ) = 0;
+
 
   virtual exc_vxc_type_rks  eval_exc_vxc_ ( const MatrixType& P, const IntegratorSettingsXC& ks_settings ) = 0;
   virtual exc_vxc_type_uks  eval_exc_vxc_ ( const MatrixType& Ps, const MatrixType& Pz, const IntegratorSettingsXC& ks_settings ) = 0;
   virtual exc_vxc_type_gks  eval_exc_vxc_ ( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, 
                                             const IntegratorSettingsXC& ks_settings ) = 0;
+  virtual exc_vxc_type_dks  eval_exc_vxc_ ( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, 
+                                            const MatrixType& Ps_SS, const MatrixType& Pz_SS, const MatrixType& Py_SS, const MatrixType& Px_SS,
+                                            const MatrixType& Ps_SS_imag, const MatrixType& Pz_SS_imag, const MatrixType& Py_SS_imag, const MatrixType& Px_SS_imag, 
+                                            const IntegratorSettingsXC& ks_settings) = 0;
   virtual multiparticle_exc_vxc_type eval_exc_vxc_( const std::vector<multiparticle_density>& densities,
                                                     const MultiParticleFunctionalSpec& functional_spec,
                                                     const MultiParticleXCTerms& terms,
@@ -118,6 +129,18 @@ public:
     return eval_exc_(Ps, Pz, Py, Px, ks_settings);
   }
 
+  /** Integrate EXC for DKS
+   *
+   *  @param[in] P The alpha density matrix
+   *  @returns Integrated EXC 
+   */
+  value_type eval_exc( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, 
+                       const MatrixType& Ps_SS, const MatrixType& Pz_SS, const MatrixType& Py_SS, const MatrixType& Px_SS,
+                       const MatrixType& Ps_SS_imag, const MatrixType& Pz_SS_imag, const MatrixType& Py_SS_imag, const MatrixType& Px_SS_imag, 
+                       const IntegratorSettingsXC& ks_settings ) {
+    return eval_exc_(Ps, Pz, Py, Px, Ps_SS, Pz_SS, Py_SS, Px_SS, Ps_SS_imag, Pz_SS_imag, Py_SS_imag, Px_SS_imag, ks_settings );
+  }
+
   /** Integrate EXC / VXC (Mean field terms) for RKS
    *
    *  @param[in] P The alpha density matrix
@@ -134,7 +157,13 @@ public:
   exc_vxc_type_gks eval_exc_vxc( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, const IntegratorSettingsXC& ks_settings ) {
     return eval_exc_vxc_(Ps, Pz, Py, Px, ks_settings);
   }
-
+  exc_vxc_type_dks eval_exc_vxc( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, 
+                                 const MatrixType& Ps_SS, const MatrixType& Pz_SS, const MatrixType& Py_SS, const MatrixType& Px_SS, 
+                                 const MatrixType& Ps_SS_imag, const MatrixType& Pz_SS_imag, const MatrixType& Py_SS_imag, const MatrixType& Px_SS_imag,
+                                 const IntegratorSettingsXC& ks_settings ) {
+    return eval_exc_vxc_(Ps, Pz, Py, Px, Ps_SS, Pz_SS, Py_SS, Px_SS, Ps_SS_imag, Pz_SS_imag, Py_SS_imag, Px_SS_imag, ks_settings );
+  }
+  
   /** Integrate EXC / VXC (mean-field terms) for multiparticle densities; defaults
    *  to evaluating VXC for all particles
    *

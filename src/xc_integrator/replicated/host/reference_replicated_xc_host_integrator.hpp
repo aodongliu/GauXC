@@ -46,11 +46,26 @@ protected:
                   const value_type* Pz, int64_t ldpz,
                   value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
-  /// GKS EXC - also serves as the generic implementation
+  /// GKS EXC 
   void eval_exc_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps,
                       const value_type* Pz, int64_t ldpz,
                       const value_type* Py, int64_t ldpy,
                       const value_type* Px, int64_t ldpx,
+                      value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
+
+    /// DKS EXC - also serves as the generic implementation
+  void eval_exc_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps,
+                      const value_type* Pz, int64_t ldpz,
+                      const value_type* Py, int64_t ldpy,
+                      const value_type* Px, int64_t ldpx,
+                      const value_type* Ps_SS, int64_t ldps_ss,
+                      const value_type* Pz_SS, int64_t ldpz_ss,
+                      const value_type* Py_SS, int64_t ldpy_ss,
+                      const value_type* Px_SS, int64_t ldpx_ss,
+                      const value_type* Ps_SS_imag,
+                      const value_type* Pz_SS_imag,
+                      const value_type* Py_SS_imag,
+                      const value_type* Px_SS_imag,
                       value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
   /// RKS EXC/VXC
@@ -65,7 +80,8 @@ protected:
                       value_type* VXCz, int64_t ldvxcz,
                       value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
-  /// GKS EXC/VXC - also serves as the generic implementation
+  
+  /// GKS EXC/VXC
   void eval_exc_vxc_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps,
                       const value_type* Pz, int64_t ldpz,
                       const value_type* Py, int64_t ldpy,
@@ -85,6 +101,33 @@ protected:
                       value_type* inter_pair_exc,
                       const IntegratorSettingsXC& ks_settings ) override;
 
+
+  /// DKS EXC/VXC - also serves as the generic implementation
+  void eval_exc_vxc_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps,
+                      const value_type* Pz, int64_t ldpz,
+                      const value_type* Py, int64_t ldpy,
+                      const value_type* Px, int64_t ldpx,
+                      const value_type* Ps_SS, int64_t ldps_ss,
+                      const value_type* Pz_SS, int64_t ldpz_ss,
+                      const value_type* Py_SS, int64_t ldpy_ss,
+                      const value_type* Px_SS, int64_t ldpx_ss,
+                      const value_type* Ps_SS_imag,
+                      const value_type* Pz_SS_imag,
+                      const value_type* Py_SS_imag,
+                      const value_type* Px_SS_imag,
+                      value_type* VXCs, int64_t ldvxcs,
+                      value_type* VXCz, int64_t ldvxcz,
+                      value_type* VXCy, int64_t ldvxcy,
+                      value_type* VXCx, int64_t ldvxcx,
+                      value_type* VXCs_SS, int64_t ldvxcs_ss,
+                      value_type* VXCz_SS, int64_t ldvxcz_ss,
+                      value_type* VXCy_SS, int64_t ldvxcy_ss,
+                      value_type* VXCx_SS, int64_t ldvxcx_ss,
+                      value_type* VXCs_SS_im, int64_t ldvxcs_ss_im,
+                      value_type* VXCz_SS_im, int64_t ldvxcz_ss_im,
+                      value_type* VXCy_SS_im, int64_t ldvxcy_ss_im,
+                      value_type* VXCx_SS_im, int64_t ldvxcx_ss_im,
+                      value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
   /// RKS EXC Gradient
   void eval_exc_grad_( int64_t m, int64_t n, const value_type* P, int64_t ldp, 
@@ -133,16 +176,33 @@ protected:
   void integrate_den_local_work_( const value_type* P, int64_t ldp, 
                                    value_type *N_EL );
 
-  // Implementation details of exc_vxc (for RKS/UKS/GKS deduced from input character)
+  // Implementation details of exc_vxc (for RKS/UKS/GKS/DKS deduced from input character)
   void exc_vxc_local_work_( const basis_type& basis, const value_type* Ps, int64_t ldps,
                             const value_type* Pz, int64_t ldpz,
                             const value_type* Py, int64_t ldpy,
                             const value_type* Px, int64_t ldpx,
+                            const value_type* Ps_SS, int64_t ldps_ss,
+                            const value_type* Pz_SS, int64_t ldpz_ss,
+                            const value_type* Py_SS, int64_t ldpy_ss,
+                            const value_type* Px_SS, int64_t ldpx_ss,
+                            const value_type* Ps_SS_imag, 
+                            const value_type* Pz_SS_imag, 
+                            const value_type* Py_SS_imag,
+                            const value_type* Px_SS_imag, 
                             value_type* VXCs, int64_t ldvxcs,
                             value_type* VXCz, int64_t ldvxcz,
                             value_type* VXCy, int64_t ldvxcy,
                             value_type* VXCx, int64_t ldvxcx,
-                            value_type* EXC, value_type *N_EL, const IntegratorSettingsXC& ks_settings,
+                            value_type* VXCs_SS, int64_t ldvxcs_ss,
+                            value_type* VXCz_SS, int64_t ldvxcz_ss,
+                            value_type* VXCy_SS, int64_t ldvxcy_ss,
+                            value_type* VXCx_SS, int64_t ldvxcx_ss,
+                            value_type* VXCs_SS_im, int64_t ldvxcs_ss_im,
+                            value_type* VXCz_SS_im, int64_t ldvxcz_ss_im,
+                            value_type* VXCy_SS_im, int64_t ldvxcy_ss_im,
+                            value_type* VXCx_SS_im, int64_t ldvxcx_ss_im,
+                            value_type* EXC, value_type *N_EL, value_type *spin_N_EL, 
+                            const IntegratorSettingsXC& ks_settings,
                             task_iterator task_begin, task_iterator task_end );
                             
   // Implementation details of the MultiParticle exc_vxc (per-rank local work)

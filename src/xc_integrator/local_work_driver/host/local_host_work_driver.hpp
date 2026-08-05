@@ -268,6 +268,22 @@ public:
   void eval_uvvar_lda_gks( size_t npts, size_t nbe, const double* basis_eval,
     const double* Xs, size_t ldxs, const double* Xz, size_t ldxz,
     const double* Xx, size_t ldxx, const double* Xy, size_t ldxy, double* den_eval, double* K, const double dtol);
+  
+  void eval_uvvar_lda_dks( size_t npts, size_t nbe, const double* basis_eval,
+    const double* dbasis_x_eval, const double* dbasis_y_eval, const double* dbasis_z_eval, 
+    const double* Xs, size_t ldxs, const double* Xz, size_t ldxz, 
+    const double* Xx, size_t ldxx, const double* Xy, size_t ldxy,  
+    const double* Xs_x_SS, size_t ldxs_ss, const double* Xz_x_SS, size_t ldxz_ss, 
+    const double* Xx_x_SS, size_t ldxx_ss, const double* Xy_x_SS, size_t ldxy_ss, 
+    const double* Xs_y_SS, const double* Xz_y_SS, 
+    const double* Xx_y_SS, const double* Xy_y_SS, 
+    const double* Xs_z_SS, const double* Xz_z_SS, 
+    const double* Xx_z_SS, const double* Xy_z_SS, 
+    const double* immat_x_z, const double* immat_y_x, const double* immat_z_y,
+    const double* immat_y_z, const double* immat_x_x, const double* immat_x_y,
+    const double* immat_x_s, const double* immat_y_s, const double* immat_z_s,
+    double* den_eval, double* K, const double dtol );
+
 
 
   /** Evaluate the U and V variavles for RKS GGA
@@ -308,6 +324,27 @@ public:
     const double* Xy, size_t ldxy, double* den_eval,
     double* dden_x_eval, double* dden_y_eval, double* dden_z_eval, double* gamma, double* K, double* H, const double dtol );
   
+
+  void eval_uvvar_gga_dks(size_t npts, size_t nbe, const double* basis_eval,
+    const double* dbasis_x_eval, const double *dbasis_y_eval, const double* dbasis_z_eval, 
+    const double* d2basis_xx_eval, const double* d2basis_xy_eval, const double* d2basis_xz_eval, 
+    const double* d2basis_yy_eval, const double* d2basis_yz_eval, const double* d2basis_zz_eval,
+    const double* Xs, size_t ldxs, const double* Xz, size_t ldxz, 
+    const double* Xx, size_t ldxx, const double* Xy, size_t ldxy,  
+    const double* Xs_x_SS, size_t ldxs_ss, const double* Xz_x_SS, size_t ldxz_ss, 
+    const double* Xx_x_SS, size_t ldxx_ss, const double* Xy_x_SS, size_t ldxy_ss, 
+    const double* Xs_y_SS, const double* Xz_y_SS, 
+    const double* Xx_y_SS, const double* Xy_y_SS, 
+    const double* Xs_z_SS, const double* Xz_z_SS, 
+    const double* Xx_z_SS, const double* Xy_z_SS, 
+    const double* immat_x_z, const double* immat_y_x, const double* immat_z_y,
+    const double* immat_y_z, const double* immat_z_x, const double* immat_x_y,
+    const double* immat_x_s, const double* immat_y_s, const double* immat_z_s,
+    double* den_eval, double* dden_x_eval, double* dden_y_eval, double* dden_z_eval, 
+    double* gamma, double* K, double* H, const double dtol );
+  
+
+
   /** Evaluate the U and V variavles for RKS MGGA
    *
    *  U = rho + gradient + tau + lapl
@@ -376,6 +413,18 @@ public:
     const double* basis_eval, double* Zs, size_t ldzs, double* Zz, size_t ldzz,
     double* Zx, size_t ldzx,double* Zy, size_t ldzy, double *K );
 
+  void eval_zmat_lda_vxc_dks( size_t npts, size_t nbf, const double* vrho,
+    const double* basis_eval, const double* dbasis_x_eval,
+    const double* dbasis_y_eval, const double* dbasis_z_eval,
+    double* Zs, size_t ldzs, double* Zz, size_t ldzz, double* Zx, size_t ldzx, double* Zy, size_t ldzy,
+    double* Zs_x_SS, size_t ldzs_ss, double* Zz_x_SS, size_t ldzz_ss, 
+    double* Zx_x_SS, size_t ldzx_ss, double* Zy_x_SS, size_t ldzy_ss, 
+    double* Zs_y_SS, double* Zz_y_SS, 
+    double* Zx_y_SS, double* Zy_y_SS, 
+    double* Zs_z_SS, double* Zz_z_SS, 
+    double* Zx_z_SS, double* Zy_z_SS,
+    double* K );
+
   /** Evaluate the VXC Z Matrix for RKS LDA
    *
    *  Z(mu,i) = 0.5 * vrho(i)   * B(mu, i) +
@@ -416,6 +465,22 @@ public:
     const double* dden_x_eval, const double* dden_y_eval, const double* dden_z_eval,
     double* Zs, size_t ldzs, double* Zz, size_t ldzz, double* Zx, size_t ldzx, 
     double* Zy, size_t ldzy, double* K, double* H );
+
+
+  void eval_zmat_gga_vxc_dks( size_t npts, size_t nbf, const double* vrho,
+    const double* vgamma, const double* basis_eval, const double* dbasis_x_eval,
+    const double* dbasis_y_eval, const double* dbasis_z_eval,
+    const double* d2basis_xx_eval, const double* d2basis_xy_eval, const double* d2basis_xz_eval, 
+    const double* d2basis_yy_eval, const double* d2basis_yz_eval, const double* d2basis_zz_eval,
+    const double* dden_x_eval, const double* dden_y_eval, const double* dden_z_eval,
+    double* Zs, size_t ldzs, double* Zz, size_t ldzz, double* Zx, size_t ldzx, double* Zy, size_t ldzy,
+    double* Zs_x_SS, size_t ldzs_ss, double* Zz_x_SS, size_t ldzz_ss, 
+    double* Zx_x_SS, size_t ldzx_ss, double* Zy_x_SS, size_t ldzy_ss, 
+    double* Zs_y_SS, double* Zz_y_SS, 
+    double* Zx_y_SS, double* Zy_y_SS, 
+    double* Zs_z_SS, double* Zz_z_SS, 
+    double* Zx_z_SS, double* Zy_z_SS,
+    double* K, double* H   );
 
   /** Evaluate the VXC Z Matrix for RKS MGGA
    *
@@ -485,7 +550,11 @@ public:
    */
   void inc_vxc( size_t npts, size_t nbf, size_t nbe, const double* basis_eval,
     const submat_map_t& submat_map, const double* Z, size_t ldz, 
-    double* VXC, size_t ldvxc, double* scr );
+    double* VXC, size_t ldvxc, double* scr, double factor = 1. );
+
+  void inc_vxc_anti( size_t npts, size_t nbf, size_t nbe, const double* basis_eval,
+    const submat_map_t& submat_map, const double* Z, size_t ldz, 
+    double* VXC, size_t ldvxc, double* scr, double factor = 1. );
 
   /** Evaluate the intermediate vector variables tmat for Fxc contraction of LDA 
    *

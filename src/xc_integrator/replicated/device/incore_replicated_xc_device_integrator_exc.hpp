@@ -58,7 +58,8 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   this->timer_.time_op("XCIntegrator.LocalWork_EXC", [&](){
     exc_vxc_local_work_( basis, Ps, ldps, Pz, ldpz, Py, ldpy, Px, ldpx,
         // Passing nullptr for VXCs disables VXC entirely
-        nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, EXC, &N_EL,
+        nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 
+        nullptr, nullptr, nullptr, nullptr, EXC, &N_EL,
        tasks.begin(), tasks.end(), *device_data_ptr);
   });
 

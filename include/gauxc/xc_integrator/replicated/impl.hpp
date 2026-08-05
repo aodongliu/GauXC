@@ -104,6 +104,23 @@ typename ReplicatedXCIntegrator<MatrixType>::value_type
 }
 
 template <typename MatrixType>
+typename ReplicatedXCIntegrator<MatrixType>::value_type 
+  ReplicatedXCIntegrator<MatrixType>::eval_exc_( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px, 
+     const MatrixType& Ps_SS, const MatrixType& Pz_SS, const MatrixType& Py_SS, const MatrixType& Px_SS, 
+     const MatrixType& Ps_SS_imag, const MatrixType& Pz_SS_imag, const MatrixType& Py_SS_imag, const MatrixType& Px_SS_imag, const IntegratorSettingsXC& ks_settings ) {
+      //dks
+  if( not pimpl_ ) GAUXC_PIMPL_NOT_INITIALIZED();
+  value_type EXC;
+  
+  const size_t n = Ps.rows();
+  pimpl_->eval_exc( n, n, Ps.data(), n, Pz.data(), n, Py.data(), n, Px.data(), n,
+                    Ps_SS.data(), n, Pz_SS.data(), n, Py_SS.data(), n, Px_SS.data(), n,
+                    Ps_SS_imag.data(), Pz_SS_imag.data(), Py_SS_imag.data(), Px_SS_imag.data(), &EXC, ks_settings );
+
+  return EXC;
+}
+
+template <typename MatrixType>
 typename ReplicatedXCIntegrator<MatrixType>::exc_vxc_type_rks 
   ReplicatedXCIntegrator<MatrixType>::eval_exc_vxc_( const MatrixType& P, const IntegratorSettingsXC& ks_settings ) {
 
@@ -158,6 +175,57 @@ typename ReplicatedXCIntegrator<MatrixType>::exc_vxc_type_gks
                         VXCx.data(), VXCx.rows(), &EXC, ks_settings );
 
   return std::make_tuple( EXC, VXCs, VXCz, VXCy, VXCx);
+
+}
+
+// dks
+template <typename MatrixType>
+typename ReplicatedXCIntegrator<MatrixType>::exc_vxc_type_dks
+  ReplicatedXCIntegrator<MatrixType>::eval_exc_vxc_( const MatrixType& Ps, const MatrixType& Pz, const MatrixType& Py, const MatrixType& Px,
+                                                     const MatrixType& Ps_SS, const MatrixType& Pz_SS, const MatrixType& Py_SS, const MatrixType& Px_SS,
+                                                     const MatrixType& Ps_SS_imag, const MatrixType& Pz_SS_imag, const MatrixType& Py_SS_imag, const MatrixType& Px_SS_imag, 
+                                                     const IntegratorSettingsXC& ks_settings) {
+  
+  if( not pimpl_ ) GAUXC_PIMPL_NOT_INITIALIZED();
+  matrix_type VXCs( Ps.rows(), Ps.cols() );
+  matrix_type VXCz( Pz.rows(), Pz.cols() );
+  matrix_type VXCy( Py.rows(), Py.cols() );
+  matrix_type VXCx( Px.rows(), Px.cols() );
+  matrix_type VXCs_SS( Ps_SS.rows(), Ps_SS.cols() );
+  matrix_type VXCz_SS( Pz_SS.rows(), Pz_SS.cols() );
+  matrix_type VXCy_SS( Py_SS.rows(), Py_SS.cols() );
+  matrix_type VXCx_SS( Px_SS.rows(), Px_SS.cols() );
+  matrix_type VXCs_SS_im( Ps_SS_imag.rows(), Ps_SS_imag.cols() );
+  matrix_type VXCz_SS_im( Pz_SS_imag.rows(), Pz_SS_imag.cols() );
+  matrix_type VXCy_SS_im( Py_SS_imag.rows(), Py_SS_imag.cols() );
+  matrix_type VXCx_SS_im( Px_SS_imag.rows(), Px_SS_imag.cols() );
+  value_type  EXC;
+  pimpl_->eval_exc_vxc( Ps.rows(), Ps.cols(), Ps.data(), Ps.rows(),
+                        Pz.data(), Pz.rows(),
+                        Py.data(), Py.rows(),
+                        Px.data(), Px.rows(),
+                        Ps_SS.data(), Ps_SS.rows(),
+                        Pz_SS.data(), Pz_SS.rows(),
+                        Py_SS.data(), Py_SS.rows(),
+                        Px_SS.data(), Px_SS.rows(),
+                        Ps_SS_imag.data(), 
+                        Pz_SS_imag.data(), 
+                        Py_SS_imag.data(), 
+                        Px_SS_imag.data(), 
+                        VXCs.data(), VXCs.rows(),
+                        VXCz.data(), VXCz.rows(),
+                        VXCy.data(), VXCy.rows(),
+                        VXCx.data(), VXCx.rows(),
+                        VXCs_SS.data(), VXCs_SS.rows(),
+                        VXCz_SS.data(), VXCz_SS.rows(),
+                        VXCy_SS.data(), VXCy_SS.rows(),
+                        VXCx_SS.data(), VXCx_SS.rows(),
+                        VXCs_SS_im.data(), VXCs_SS_im.rows(),
+                        VXCz_SS_im.data(), VXCz_SS_im.rows(),
+                        VXCy_SS_im.data(), VXCy_SS_im.rows(),
+                        VXCx_SS_im.data(), VXCx_SS_im.rows(), &EXC, ks_settings );
+                        
+  return std::make_tuple( EXC, VXCs, VXCz, VXCy, VXCx, VXCs_SS, VXCz_SS, VXCy_SS, VXCx_SS, VXCs_SS_im, VXCz_SS_im, VXCy_SS_im, VXCx_SS_im);
 
 }
 

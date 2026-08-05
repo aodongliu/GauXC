@@ -40,6 +40,9 @@ public:
   using exc_vxc_type_rks  = std::tuple< value_type, matrix_type >;
   using exc_vxc_type_uks  = std::tuple< value_type, matrix_type, matrix_type >;  
   using exc_vxc_type_gks  = std::tuple< value_type, matrix_type, matrix_type, matrix_type, matrix_type >;
+  using exc_vxc_type_dks  = std::tuple< value_type, matrix_type, matrix_type, matrix_type, matrix_type,
+   matrix_type, matrix_type, matrix_type, matrix_type, matrix_type, matrix_type, matrix_type, matrix_type >;
+
   struct multiparticle_density {
     const matrix_type* Ps = nullptr;
     const matrix_type* Pz = nullptr;
@@ -79,13 +82,20 @@ public:
   value_type    eval_exc( const MatrixType&, const IntegratorSettingsXC& = IntegratorSettingsXC{} );
   value_type    eval_exc( const MatrixType&, const MatrixType&, const IntegratorSettingsXC& = IntegratorSettingsXC{} );
   value_type    eval_exc( const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,  const IntegratorSettingsXC& = IntegratorSettingsXC{} );
+  value_type    eval_exc( const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&, 
+                          const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,  
+                          const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&, const IntegratorSettingsXC& = IntegratorSettingsXC{} );
 
   exc_vxc_type_rks  eval_exc_vxc ( const MatrixType&, 
                                    const IntegratorSettingsXC& = IntegratorSettingsXC{} );
   exc_vxc_type_uks  eval_exc_vxc ( const MatrixType&, const MatrixType&,
                                    const IntegratorSettingsXC& = IntegratorSettingsXC{} );
   exc_vxc_type_gks  eval_exc_vxc ( const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,
-                                   const IntegratorSettingsXC& = IntegratorSettingsXC{});
+                                   const IntegratorSettingsXC& = IntegratorSettingsXC{} );
+  exc_vxc_type_dks  eval_exc_vxc ( const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,
+                                   const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,
+                                   const MatrixType&, const MatrixType&, const MatrixType&, const MatrixType&,
+                                   const IntegratorSettingsXC& = IntegratorSettingsXC{}) ;
   multiparticle_exc_vxc_type eval_exc_vxc( const std::vector<multiparticle_density>&,
                                            const MultiParticleFunctionalSpec&,
                                            const IntegratorSettingsXC& = IntegratorSettingsXC{} );

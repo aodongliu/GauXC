@@ -62,6 +62,21 @@ protected:
                   const value_type* Px, int64_t ldpx,
                   value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
+                    /// DKS EXC - also serves as the generic implementation
+  void eval_exc_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps,
+                  const value_type* Pz, int64_t ldpz,
+                  const value_type* Py, int64_t ldpy,
+                  const value_type* Px, int64_t ldpx,
+                  const value_type* Ps_SS, int64_t ldps_ss,
+                  const value_type* Pz_SS, int64_t ldpz_ss,
+                  const value_type* Py_SS, int64_t ldpy_ss,
+                  const value_type* Px_SS, int64_t ldpx_ss,
+                  const value_type* Ps_SS_imag,
+                  const value_type* Pz_SS_imag,
+                  const value_type* Py_SS_imag,
+                  const value_type* Px_SS_imag,
+                  value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
+
   /// RKS EXC/VXC
   void eval_exc_vxc_( int64_t m, int64_t n, const value_type* P, int64_t ldp, 
                       value_type* VXC, int64_t ldvxc, value_type* EXC, 
@@ -85,6 +100,32 @@ protected:
                       value_type* VXCx, int64_t ldvxcx,
                       value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
+                        /// DKS EXC/VXC - also s
+  void eval_exc_vxc_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps,
+                      const value_type* Pz, int64_t ldpz,
+                      const value_type* Py, int64_t ldpy,
+                      const value_type* Px, int64_t ldpx,
+                      const value_type* Ps_SS, int64_t ldps_ss,
+                      const value_type* Pz_SS, int64_t ldpz_ss,
+                      const value_type* Py_SS, int64_t ldpy_ss,
+                      const value_type* Px_SS, int64_t ldpx_ss,
+                      const value_type* Ps_SS_imag,
+                      const value_type* Pz_SS_imag,
+                      const value_type* Py_SS_imag,
+                      const value_type* Px_SS_imag,
+                      value_type* VXCs, int64_t ldvxcs,
+                      value_type* VXCz, int64_t ldvxcz,
+                      value_type* VXCy, int64_t ldvxcy,
+                      value_type* VXCx, int64_t ldvxcx,
+                      value_type* VXCs_SS, int64_t ldvxcs_ss,
+                      value_type* VXCz_SS, int64_t ldvxcz_ss,
+                      value_type* VXCy_SS, int64_t ldvxcy_ss,
+                      value_type* VXCx_SS, int64_t ldvxcx_ss,
+                      value_type* VXCs_SS_im, int64_t ldvxcs_ss_im,
+                      value_type* VXCz_SS_im, int64_t ldvxcz_ss_im,
+                      value_type* VXCy_SS_im, int64_t ldvxcy_ss_im,
+                      value_type* VXCx_SS_im, int64_t ldvxcx_ss_im,
+                      value_type* EXC, const IntegratorSettingsXC& ks_settings ) override;
 
   /// RKS EXC Gradient
   void eval_exc_grad_( int64_t m, int64_t n, const value_type* P, int64_t ldp, 
@@ -123,16 +164,46 @@ protected:
   void eval_dd_psi_potential_( int64_t m, int64_t n, const value_type* X, unsigned max_Ylm, value_type* Vddx ) override;
 
 
-  // Implementation details of exc_vxc (for RKS/UKS/GKS deduced from input character)
+  // // Implementation details of exc_vxc (for RKS/UKS/GKS deduced from input character)
+  // void exc_vxc_local_work_( const basis_type& basis, const value_type* Ps, int64_t ldps,
+  //                           const value_type* Pz, int64_t ldpz,
+  //                           const value_type* Py, int64_t ldpy,
+  //                           const value_type* Px, int64_t ldpx,
+  //                           value_type* VXCs, int64_t ldvxcs,
+  //                           value_type* VXCz, int64_t ldvxcz,
+  //                           value_type* VXCy, int64_t ldvxcy,
+  //                           value_type* VXCx, int64_t ldvxcx,
+  //                           value_type* EXC, value_type *N_EL,
+  //                           host_task_iterator task_begin, host_task_iterator task_end, incore_integrator_type& incore_integrator
+  //                            );
+
+                      
+  // Implementation details of exc_vxc (for DKS Unimplimented)
   void exc_vxc_local_work_( const basis_type& basis, const value_type* Ps, int64_t ldps,
                             const value_type* Pz, int64_t ldpz,
                             const value_type* Py, int64_t ldpy,
                             const value_type* Px, int64_t ldpx,
+                            const value_type* Ps_SS, int64_t ldps_ss,
+                            const value_type* Pz_SS, int64_t ldpz_ss,
+                            const value_type* Py_SS, int64_t ldpy_ss,
+                            const value_type* Px_SS, int64_t ldpx_ss,
+                            const value_type* Ps_SS_imag, 
+                            const value_type* Pz_SS_imag, 
+                            const value_type* Py_SS_imag,
+                            const value_type* Px_SS_imag, 
                             value_type* VXCs, int64_t ldvxcs,
                             value_type* VXCz, int64_t ldvxcz,
                             value_type* VXCy, int64_t ldvxcy,
                             value_type* VXCx, int64_t ldvxcx,
-                            value_type* EXC, value_type *N_EL,
+                            value_type* VXCs_SS, int64_t ldvxcs_ss,
+                            value_type* VXCz_SS, int64_t ldvxcz_ss,
+                            value_type* VXCy_SS, int64_t ldvxcy_ss,
+                            value_type* VXCx_SS, int64_t ldvxcx_ss,
+                            value_type* VXCs_SS_im, int64_t ldvxcs_ss_im,
+                            value_type* VXCz_SS_im, int64_t ldvxcz_ss_im,
+                            value_type* VXCy_SS_im, int64_t ldvxcy_ss_im,
+                            value_type* VXCx_SS_im, int64_t ldvxcx_ss_im,
+                            value_type* EXC, value_type *N_EL, value_type *spin_N_EL,
                             host_task_iterator task_begin, host_task_iterator task_end, incore_integrator_type& incore_integrator
                              );
 

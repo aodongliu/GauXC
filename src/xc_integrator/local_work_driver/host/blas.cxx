@@ -42,6 +42,22 @@ void ssyr2k_( const char* UPLO, const char* TRANS, const blas_int* N, const blas
               const float* ALPHA, const float* A, const blas_int* LDA, const float* B, 
               const blas_int* LDB, const float* BETA, float* C, const blas_int* LDC ); 
 
+void zher2k_( const char* UPLO, const char* TRANS, const blas_int* N, const blas_int* K, 
+              const std::complex<double>* ALPHA, const std::complex<double>* A, const blas_int* LDA, const std::complex<double>* B, 
+              const blas_int* LDB, const double* BETA, std::complex<double>* C, const blas_int* LDC ); 
+void cher2k_( const char* UPLO, const char* TRANS, const blas_int* N, const blas_int* K, 
+              const std::complex<float>* ALPHA, const std::complex<float>* A, const blas_int* LDA, const std::complex<float>* B, 
+              const blas_int* LDB, const float* BETA, std::complex<float>* C, const blas_int* LDC ); 
+
+void dger_( const blas_int* N, const blas_int* K, 
+              const double* ALPHA, const double* A, const blas_int* LDA, const double* B, 
+              const blas_int* LDB, double* C, const blas_int* LDC ); 
+void sger_( const blas_int* N, const blas_int* K, 
+              const float* ALPHA, const float* A, const blas_int* LDA, const float* B, 
+              const blas_int* LDB, float* C, const blas_int* LDC ); 
+
+
+            
 double ddot_( const blas_int* N, const double* X, const blas_int* INCX, const double* Y, 
               const blas_int* INCY );
 float sdot_( const blas_int* N, const float* X, const blas_int* INCX, const float* Y, 
@@ -168,6 +184,67 @@ void syr2k( char UPLO, char floatRANS, int N, int K, float ALPHA,
 template
 void syr2k( char UPLO, char doubleRANS, int N, int K, double ALPHA,
             const double* A, int LDA, const double* B, int LDB, double BETA, 
+            double* C, int LDC );
+
+
+template <typename T, typename realT>
+void her2k( char UPLO, char TRANS, int _N, int _K, T ALPHA,
+            const T* A, int _LDA, const T* B, int _LDB, realT BETA, 
+            T* C, int _LDC ) {
+
+  blas_int N   = _N;
+  blas_int K   = _K;
+  blas_int LDA = _LDA;
+  blas_int LDB = _LDB;
+  blas_int LDC = _LDC;
+
+  if constexpr ( std::is_same_v<T,std::complex<float>> )
+    cher2k_( &UPLO, &TRANS, &N, &K, &ALPHA, A, &LDA, B, &LDB, &BETA, C, &LDC );
+  else if constexpr ( std::is_same_v<T,std::complex<double>> )
+    zher2k_( &UPLO, &TRANS, &N, &K, &ALPHA, A, &LDA, B, &LDB, &BETA, C, &LDC );
+  else GAUXC_GENERIC_EXCEPTION("HER2K NYI");
+
+
+}
+
+template
+void her2k( char UPLO, char floatRANS, int N, int K, std::complex<float> ALPHA,
+            const std::complex<float>* A, int LDA, const std::complex<float>* B, int LDB, float BETA, 
+            std::complex<float>* C, int LDC );
+template
+void her2k( char UPLO, char doubleRANS, int N, int K, std::complex<double> ALPHA,
+            const std::complex<double>* A, int LDA, const std::complex<double>* B, int LDB, double BETA, 
+            std::complex<double>* C, int LDC );
+
+
+
+template <typename T>
+void ger(   int _N, int _K, T ALPHA,
+            const T* A, int _LDA, const T* B, int _LDB,
+            T* C, int _LDC ) {
+
+  blas_int N   = _N;
+  blas_int K   = _K;
+  blas_int LDA = _LDA;
+  blas_int LDB = _LDB;
+  blas_int LDC = _LDC;
+
+  if constexpr ( std::is_same_v<T,float> )
+    sger_( &N, &K, &ALPHA, A, &LDA, B, &LDB, C, &LDC );
+  else if constexpr ( std::is_same_v<T,double> )
+    dger_( &N, &K, &ALPHA, A, &LDA, B, &LDB, C, &LDC );
+  else GAUXC_GENERIC_EXCEPTION("GER NYI");
+
+
+}
+
+template
+void ger(   int N, int K, float ALPHA,
+            const float* A, int LDA, const float* B, int LDB,
+            float* C, int LDC );
+template
+void ger(   int N, int K, double ALPHA,
+            const double* A, int LDA, const double* B, int LDB, 
             double* C, int LDC );
             
 

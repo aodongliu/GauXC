@@ -42,6 +42,7 @@ add_library( gauxc
   atomic_radii.cxx
   cube_grid.cxx
   orbital_evaluator.cxx
+  physcon.cxx
 )
 
 if( GAUXC_ENABLE_C )

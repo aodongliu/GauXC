@@ -260,10 +260,6 @@ namespace GauXC {
     auto *KX = KY + npts;
 
     double dtolsq = dtol*dtol;
-
-  
-    auto flip = -1.0;
-
  
     for( int32_t i = 0; i < (int32_t)npts; ++i ) {
 

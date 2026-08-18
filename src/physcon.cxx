@@ -7,10 +7,11 @@
  */
 
 #pragma once
+#include <gauxc/physcon.hpp>
 
 namespace GauXC {
 
-	  extern double SpeedOfLight;
-	  extern double RKB_factor;
+	  double SpeedOfLight  = 137.035999074;
+	  double RKB_factor = 1./(4.*SpeedOfLight*SpeedOfLight);
 
 };

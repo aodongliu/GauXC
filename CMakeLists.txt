@@ -39,6 +39,7 @@ option( GAUXC_ENABLE_HDF5       "Enable HDF5 Bindings"        ON  )
 option( GAUXC_USE_FAST_RSQRT    "Enable Fast RSQRT"           OFF )
 option( GAUXC_BLAS_PREFER_ILP64 "Prefer ILP64 for host BLAS"  OFF )
 option( GAUXC_LINK_CUDA_STATIC  "Link GauXC with static CUDA libs"  OFF )
+option( GAUXC_ENABLE_NVTX_MP    "Enable NVTX attribution ranges in the device NEO multiparticle driver (profiling only)" OFF )
 
 include(CMakeDependentOption)
 cmake_dependent_option( GAUXC_ENABLE_MAGMA    

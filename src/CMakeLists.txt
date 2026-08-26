@@ -127,6 +127,10 @@ add_subdirectory( external )
 
 add_library( gauxc::gauxc ALIAS gauxc )
 
+if( GAUXC_ENABLE_NVTX_MP )
+  message( STATUS "GauXC Enabling NVTX attribution in the device NEO multiparticle driver" )
+  target_compile_definitions( gauxc PRIVATE GAUXC_ENABLE_NVTX )
+endif()
 
 if(GAUXC_HAS_HOST)
   set(GAUXC_CPU_XC_MAX_AM     6) 

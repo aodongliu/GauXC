@@ -24,6 +24,15 @@
 #include <iostream>
 #endif
 
+// WP2a-5 attribution instrumentation -- off by default, compiles to nothing
+// unless the driver is built with GAUXC_ENABLE_NVTX_MP=ON (CMakeLists.txt).
+// One NVTX range per (species|pair, phase) lane of the species-serial loop
+// below, named "MP:s<p>:<phase>" / "MP:pair<i>:C" / "MP:s<p>:D:<S|Z>".
+#ifdef GAUXC_ENABLE_NVTX
+#include <nvtx3/nvToolsExt.h>
+#include <cstdio>
+#endif
+
 namespace GauXC  {
 namespace detail {
 
@@ -77,6 +86,32 @@ inline bool alpha_only_eligible( const double* Ps, int64_t ldps,
   if( ldps != nbf or ldpz != nbf ) return false;
   return std::memcmp( Ps, Pz, size_t(nbf) * size_t(nbf) * sizeof(double) ) == 0;
 }
+
+#ifdef GAUXC_ENABLE_NVTX
+/** RAII NVTX range for one (species|pair, phase) lane.  Syncs the master
+ *  queue before popping so the range's reported wall time reflects actual
+ *  device completion, not host dispatch latency -- the driver already runs
+ *  every MP kernel on a single master stream (strict issue-order execution),
+ *  so this sync changes nothing about what runs where, only when the host
+ *  learns it finished.  Used only when profiling; never on the default
+ *  (uninstrumented) hot path measured for G6. */
+struct nvtx_phase_guard {
+  DeviceBackend* be;
+  nvtx_phase_guard( DeviceBackend* b, const char* name ) : be(b) {
+    nvtxRangePushA(name);
+  }
+  ~nvtx_phase_guard() {
+    if( be ) be->master_queue_synchronize();
+    nvtxRangePop();
+  }
+};
+#define GAUXC_MP_NVTX(be, ...)                                              \
+  char _gauxc_nvtx_buf[40];                                                 \
+  std::snprintf(_gauxc_nvtx_buf, sizeof(_gauxc_nvtx_buf), __VA_ARGS__);     \
+  mp_device_detail::nvtx_phase_guard _gauxc_nvtx_g(be, _gauxc_nvtx_buf)
+#else
+#define GAUXC_MP_NVTX(be, ...) do {} while(0)
+#endif
 
 } // namespace mp_device_detail
 
@@ -461,6 +496,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
       const auto& s = mp.species[p];
       if( not s.participates ) continue;
       species_scope scope( &device_data, p );
+      GAUXC_MP_NVTX(stack_data->device_backend_, "MP:s%zu:A", p);
 
       const bool is_gga         = s.approx == GGA;
       const bool two_channel    = (s.scheme == UKS) and not s.alpha_only;
@@ -530,6 +566,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
       const auto& s = mp.species[p];
       if( not s.has_intra or nactive_tasks[p] == 0 ) continue;
       species_scope scope( &device_data, p );
+      GAUXC_MP_NVTX(stack_data->device_backend_, "MP:s%zu:B", p);
 
       if( s.approx == GGA ) lwd->eval_kern_exc_vxc_gga( *intra_func[p], &device_data );
       else                  lwd->eval_kern_exc_vxc_lda( *intra_func[p], &device_data );
@@ -542,6 +579,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     //                 ACCUMULATES into vrho -- must follow B.
     for( size_t i = 0; i < ninter; ++i ) {
       if( not mp.pairs[i].active ) continue;
+      GAUXC_MP_NVTX(stack_data->device_backend_, "MP:pair%zu:C", i);
       const auto& func = *functional_spec.inter_functionals[i].functionals.front();
       lwd->eval_kern_exc_vxc_inter_lda( func, &device_data, mp, i );
       lwd->inc_inter_exc( &device_data, mp, i );
@@ -564,6 +602,8 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
       const bool two_channel  = (s.scheme == UKS) and not s.alpha_only;
 
       auto do_zmat_vxc = [&]( density_id den_id ) {
+        GAUXC_MP_NVTX(stack_data->device_backend_, "MP:s%zu:D:%s", p,
+          den_id == DEN_S ? "S" : "Z");
         if( s.approx == GGA ) lwd->eval_zmat_gga_vxc( &device_data, zmat_scheme, den_id );
         else                  lwd->eval_zmat_lda_vxc( &device_data, zmat_scheme, den_id );
         lwd->inc_vxc( &device_data, den_id, false );

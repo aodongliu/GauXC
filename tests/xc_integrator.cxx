@@ -917,18 +917,49 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
   auto svwn5   = ExchCXX::Functional::SVWN5;
   auto epc17_2 = ExchCXX::Functional::EPC17_2;
 
-  // Reference-driven sections go here, one per file, e.g.
+  // One SECTION per reference file. The file carries the system, the densities
+  // and the expected results; the intra/inter functionals and the pruning
+  // scheme are hard-coded here -- exactly as the single-species sections above
+  // do -- and must match what the reference was generated with.
   //
-  //   SECTION( "COH2 / BLYP,EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
-  //     auto func    = make_functional(blyp, unpol);
-  //     auto epcfunc = make_functional(epc17_2, pol);
-  //     test_neo_integrator(GAUXC_REF_DATA_PATH
-  //       "/coh2_blyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
-  //       PruningScheme::Unpruned );
-  //   }
-  //
-  // References are generated with standalone_driver in its NEO mode; see
-  // tests/standalone_driver.cxx.
+  // References are generated with standalone_driver in its NEO mode (see
+  // tests/standalone_driver.cxx) from a converged ChronusQ NEO-SCF density,
+  // using GRID=ULTRAFINE, RAD_QUAD=MURAKNOWLES, PRUNING_SCHEME=UNPRUNED,
+  // BATCH_SIZE=512, BASIS_TOL=2.220446049250313e-16 and XC_WEIGHT_ALG=SSF,
+  // i.e. exactly the settings test_neo_xc_integrator hard-codes above.
+
+  // COH2 with one protonic species spanning both quantum hydrogens: a GGA
+  // electronic intra functional against an LDA (EPC) inter functional. Carries
+  // a gradient reference.
+  SECTION( "COH2 / BLYP, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(blyp,    unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2_blyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // The same system with an LDA electronic functional. The LDA intra kernels
+  // are a separate code path from the GGA ones above and are where the device
+  // implementation is most likely to diverge. Carries a gradient reference.
+  SECTION( "COH2 / SVWN5, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(svwn5,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2_svwn5_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // Smallest case (12 electronic / 8 protonic basis functions) and a different
+  // protonic angular composition -- prot-SP is 1s1p where prot-PB4-D is
+  // 4s3p2d -- which exercises L-dependent submatrix maps and screening.
+  SECTION( "COH2 / BLYP, EPC-17-2 / STO-3G, prot-SP" ) {
+    auto func    = make_functional(blyp,    unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2_blyp_epc17-2_sto-3g_protsp_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
 
   // This section needs no reference data: it pins the multiparticle input
   // validation and the device NYI contract on a synthetic H2 + 1 protonic

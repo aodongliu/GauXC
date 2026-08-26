@@ -135,17 +135,31 @@ struct XCTask {
   }
 
 
+  // Per-point basis work estimate, summed over the active basis sets:
+  //   sum_p nbe_p * ( 1 + nbe_p + n_deriv )
+  // The collocation/X-matrix/Z-matrix work of each species is quadratic in
+  // that species' own nbe; accumulating nbe over species and squaring the
+  // total would add a spurious cross term 2*nbe_e*nbe_p that corresponds to
+  // no actual work. For a single species (or the legacy single-screening
+  // path) this is algebraically identical to the previous expression.
+  inline size_t bfn_work(size_t n_deriv) const {
+    if( bfn_screenings.empty() ) {
+      const size_t nbe = bfn_screening.nbe;
+      return nbe * ( 1 + nbe + n_deriv );
+    }
+    size_t w = 0;
+    for( const auto& s : bfn_screenings ) {
+      const size_t nbe = s.nbe;
+      w += nbe * ( 1 + nbe + n_deriv );
+    }
+    return w;
+  }
+
   inline size_t cost(size_t n_deriv, size_t natoms) const {
-    const size_t nbe = bfn_screenings.empty() ? bfn_screening.nbe :
-      std::accumulate( bfn_screenings.begin(), bfn_screenings.end(), size_t{0},
-        []( const auto& v, const auto& s ) { return v + s.nbe; } );
-    return (nbe * ( 1 + nbe + n_deriv ) + natoms * natoms) * npts;
+    return (bfn_work(n_deriv) + natoms * natoms) * npts;
   }
   inline size_t cost_exc_vxc(size_t n_deriv) const {
-    const size_t nbe = bfn_screenings.empty() ? bfn_screening.nbe :
-      std::accumulate( bfn_screenings.begin(), bfn_screenings.end(), size_t{0},
-        []( const auto& v, const auto& s ) { return v + s.nbe; } );
-    return nbe * ( 1 + nbe + n_deriv ) * npts;
+    return bfn_work(n_deriv) * npts;
   }
   inline size_t cost_exx() const {
     return ( bfn_screening.nbe + 2*cou_screening.nbe*bfn_screening.nbe +

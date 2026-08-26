@@ -914,6 +914,7 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
   auto pol     = ExchCXX::Spin::Polarized;
   auto unpol   = ExchCXX::Spin::Unpolarized;
   auto blyp    = ExchCXX::Functional::BLYP;
+  auto b3lyp   = ExchCXX::Functional::B3LYP;
   auto svwn5   = ExchCXX::Functional::SVWN5;
   auto epc17_2 = ExchCXX::Functional::EPC17_2;
 
@@ -958,6 +959,70 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
     auto epcfunc = make_functional(epc17_2, pol);
     test_neo_integrator(GAUXC_REF_DATA_PATH
       "/coh2_blyp_epc17-2_sto-3g_protsp_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // Distorted H2O with BOTH hydrogens quantum and DISTINGUISHABLE, i.e. two
+  // protonic species and two EPC pairs sharing one electron. The O-H bonds are
+  // 0.96 and 1.06 Angstrom at a 100 degree angle, so the two protonic species
+  // carry genuinely different densities and different VXC (the reference has
+  // |dP|_F/|P|_F = 0.53 between them): any species-index transposition changes
+  // the answer. Two pairs also exercise EPC accumulation into the shared
+  // electron channel, and nprot > 1 activates the permutation-invariance
+  // block. Carries a gradient reference.
+  SECTION( "H2O (distorted) / SVWN5, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(svwn5,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/h2o-distorted_svwn5_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // A single quantum proton at one end of a near-linear molecule: the protonic
+  // basis has support on one centre while the grid spans all three, so 55% of
+  // the tasks carry no protonic basis functions at all. This is the screening /
+  // empty-task case.
+  SECTION( "HCN / BLYP, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(blyp,    unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/hcn_blyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // Water dimer, one quantum proton per monomer as its own species. The two
+  // protonic supports are ~3 Angstrom apart and disjoint -- 66% and 68% of the
+  // tasks are empty for species 1 and 2 respectively -- which is the regime a
+  // per-species active-task list has to get right.
+  SECTION( "W02 water dimer / B3LYP, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(b3lyp,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/w02_b3lyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // Water tetramer: 96 electronic basis functions, four protonic species and
+  // four EPC pairs. The largest multi-pair scatter in the suite, and the only
+  // case whose permutation-invariance block permutes more than two species.
+  SECTION( "W04 water tetramer / B3LYP, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(b3lyp,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/w04_b3lyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  // The COH2 cation (charge +1, doublet) with an unrestricted electron. This is
+  // the only NEO reference with a spin-polarised electron, and therefore the
+  // only one that exercises the EPC potential being scattered into BOTH
+  // electron spin channels; test_neo_xc_integrator picks it up from the
+  // reference file's /DENSITY_Z, exactly as the single-species UKS sections do.
+  SECTION( "COH2 cation (doublet) / BLYP, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(blyp,    pol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2-cation_ublyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
       PruningScheme::Unpruned );
   }
 

@@ -46,6 +46,32 @@ void Scheme1DataBase::reset_allocations() {
   task_to_shell_pair.clear();
 }
 
+void Scheme1DataBase::store_species_state( size_t p ) {
+  base_type::store_species_state(p);
+  auto& s = scheme1_species_.at(p);
+  s.total_nshells_bfn_task_batch = total_nshells_bfn_task_batch;
+  s.scheme1_stack                = scheme1_stack;
+  s.collocation_stack            = collocation_stack;
+  s.shell_to_task_stack          = shell_to_task_stack;
+  s.l_batched_shell_to_task      = l_batched_shell_to_task;
+}
+
+void Scheme1DataBase::load_species_state( size_t p ) {
+  base_type::load_species_state(p);
+  const auto& s = scheme1_species_.at(p);
+  total_nshells_bfn_task_batch = s.total_nshells_bfn_task_batch;
+  scheme1_stack                = s.scheme1_stack;
+  collocation_stack            = s.collocation_stack;
+  shell_to_task_stack          = s.shell_to_task_stack;
+  l_batched_shell_to_task      = s.l_batched_shell_to_task;
+}
+
+void Scheme1DataBase::resize_species_slots( size_t np ) {
+  base_type::resize_species_slots(np);
+  scheme1_species_.clear();
+  scheme1_species_.resize(np);
+}
+
 size_t Scheme1DataBase::get_static_mem_requirement() {
   size_t size = 0;
 
@@ -77,10 +103,14 @@ size_t Scheme1DataBase::get_mem_req( integrator_term_tracker terms,
   // All local memory is weights related
   size_t base_size = base_type::get_mem_req(terms, task);
 
+  // Compact per-species task list: a task this species screens out of carries
+  // no shell list and no task->shell map.  Never taken for a single species.
+  if( not task_is_active(task) ) return base_size;
+
   required_term_storage reqt(terms);
   const auto ldatoms = get_ldatoms();
   const auto npts = task.npts;
-  const auto& shell_list_bfn = task.bfn_screening.shell_list;
+  const auto& shell_list_bfn = host_bfn_screening(task).shell_list;
   const auto& shell_list_cou = task.cou_screening.shell_list;
   const size_t nshells_bfn  = shell_list_bfn.size();
   const size_t nshells_cou  = shell_list_cou.size();
@@ -162,7 +192,10 @@ Scheme1DataBase::device_buffer_t Scheme1DataBase::allocate_dynamic_stack(
   size_t num_subtasks = 0;
   const int points_per_subtask = get_points_per_subtask();
   for( auto it = task_begin; it != task_end; ++it ) {
-    const auto& shell_list_bfn  = it->bfn_screening.shell_list;
+    // Compact per-species task list (no-op for a single species)
+    if( not task_is_active(*it) ) continue;
+
+    const auto& shell_list_bfn  = host_bfn_screening(*it).shell_list;
     const size_t nshells_bfn  = shell_list_bfn.size();
     total_nshells_bfn_task_batch  += nshells_bfn;
 
@@ -338,8 +371,15 @@ void Scheme1DataBase::pack_and_send(
   }
 
   // Shell list, offsets + task map (bfn)
+  //
+  // `idevtask` indexes the COMPACT per-species device task array, which is what
+  // the shell->task kernels dereference.  For a single species every task is
+  // active and it is exactly std::distance(task_begin, it), as before.
+  int32_t idevtask = 0;
   for( auto it = task_begin; it != task_end; ++it ) {
-    const auto& shell_list_bfn  = it->bfn_screening.shell_list;
+    if( not task_is_active(*it) ) continue;
+
+    const auto& shell_list_bfn  = host_bfn_screening(*it).shell_list;
     const size_t nshells_bfn  = shell_list_bfn.size();
 
     // Pack shell list (bfn)
@@ -357,13 +397,14 @@ void Scheme1DataBase::pack_and_send(
 
     // Setup meta data for Shell -> Task (bfn)
     if(reqt.shell_to_task_bfn) {
-      const auto itask = std::distance( task_begin, it );
       for( auto i = 0ul; i < nshells_bfn; ++i ) {
         const auto sh_idx = shell_list_bfn.at(i);
-        shell_to_task_idx_bfn[sh_idx].emplace_back(itask);
+        shell_to_task_idx_bfn[sh_idx].emplace_back(idevtask);
         shell_to_task_off_bfn[sh_idx].emplace_back(shell_offs_bfn.at(i));
       }
     }
+
+    idevtask++;
   }
 
   // Send Shell list and offsets (bfn) to device

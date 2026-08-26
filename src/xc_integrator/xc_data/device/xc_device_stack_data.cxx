@@ -64,6 +64,419 @@ void XCDeviceStackData::reset_allocations() {
   allocated_terms.reset();
   static_stack.reset();
   base_stack.reset();
+  mp_static.reset();
+  mp_dyn.reset();
+  mp_ninter_        = 0;
+  mp_active_        = false;
+  mp_grid_owner_    = true;
+  active_alpha_only_ = false;
+  mp_batch_static_req_ = 0;
+  mp_batch_est_bytes_  = 0;
+  mp_batch_dyn_used_   = 0;
+  mp_batch_ntasks_     = 0;
+}
+
+
+// ---------------------------------------------------------------------------
+//  Multi-species (NEO / multiparticle) context machinery -- design §1.3
+// ---------------------------------------------------------------------------
+
+void XCDeviceStackData::store_species_state( size_t p ) {
+  auto& s = stack_species_.at(p);
+  s.global_dims     = global_dims;
+  s.allocated_terms = allocated_terms;
+  s.static_stack    = static_stack;
+  s.base_stack      = base_stack;
+  s.alpha_only      = active_alpha_only_;
+}
+
+void XCDeviceStackData::load_species_state( size_t p ) {
+  const auto& s = stack_species_.at(p);
+  global_dims        = s.global_dims;
+  allocated_terms    = s.allocated_terms;
+  static_stack       = s.static_stack;
+  base_stack         = s.base_stack;
+  active_alpha_only_ = s.alpha_only;
+}
+
+void XCDeviceStackData::resize_species_slots( size_t np ) {
+  stack_species_.clear();
+  stack_species_.resize(np);
+}
+
+void XCDeviceStackData::init_species( size_t np ) {
+  if( np == 0 ) GAUXC_GENERIC_EXCEPTION("At least one species is required");
+  reset_allocations();        // virtual: resets every level's live state
+  global_dims = allocated_dims{};
+  resize_species_slots(np);   // virtual: resets every level's slots
+  nspecies_          = np;
+  active_species_    = 0;
+  active_alpha_only_ = false;
+}
+
+void XCDeviceStackData::select_species( size_t p ) {
+  if( p >= nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("Requested species index is out of range");
+  if( p == active_species_ ) return;
+  if( stack_species_.size() != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("Species contexts have not been initialized");
+  store_species_state( active_species_ );
+  load_species_state( p );
+  active_species_ = p;
+}
+
+const XCDeviceStackData::stack_species_state&
+  XCDeviceStackData::species_state( size_t p ) {
+  if( p >= nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("Requested species index is out of range");
+  if( stack_species_.size() != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("Species contexts have not been initialized");
+  // The live members are authoritative for the active species -- mirror them
+  // into the slot so callers always see current pointers.
+  if( p == active_species_ ) store_species_state( p );
+  return stack_species_.at(p);
+}
+
+const XCTask::screening_data&
+  XCDeviceStackData::host_bfn_screening( const XCTask& t ) const {
+  // With a single species context this IS the legacy expression, so every
+  // single-species sizing/packing site is unchanged by construction.
+  if( nspecies_ == 1 ) return t.bfn_screening;
+  if( t.bfn_screenings.empty() ) {
+    if( active_species_ == 0 ) return t.bfn_screening;
+    GAUXC_GENERIC_EXCEPTION("Requested basis screening is not available");
+  }
+  return t.bfn_screenings.at(active_species_);
+}
+
+XCTask::screening_data&
+  XCDeviceStackData::host_bfn_screening( XCTask& t ) const {
+  if( nspecies_ == 1 ) return t.bfn_screening;
+  if( t.bfn_screenings.empty() ) {
+    if( active_species_ == 0 ) return t.bfn_screening;
+    GAUXC_GENERIC_EXCEPTION("Requested basis screening is not available");
+  }
+  return t.bfn_screenings.at(active_species_);
+}
+
+
+void XCDeviceStackData::allocate_static_data_exc_vxc_multiparticle(
+  const multiparticle_tracker& mp ) {
+
+  const size_t np = mp.nspecies();
+  if( np != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: species count does not match init_species");
+
+  // One arena, carved sequentially across species -- never per-species pools.
+  for( size_t p = 0; p < np; ++p ) {
+    const auto& s = mp.species.at(p);
+    if( not s.participates ) continue;
+    select_species(p);
+    active_alpha_only_ = s.alpha_only;
+    allocate_static_data_exc_vxc( s.nbf, s.nshells, mp.species_terms(p),
+      s.build_vxc );
+  }
+  select_species(0);
+
+  // Shared inter-pair storage (§1.7)
+  mp_ninter_ = mp.pairs.size();
+  buffer_adaptor mem( dynmem_ptr, dynmem_sz );
+  mp_static.acc_scr_device = mem.aligned_alloc<double>( 1, csl );
+  if( mp_ninter_ )
+    mp_static.inter_exc_device = mem.aligned_alloc<double>( mp_ninter_, csl );
+
+  dynmem_ptr = mem.stack();
+  dynmem_sz  = mem.nleft();
+}
+
+
+void XCDeviceStackData::send_static_data_density_basis_species( size_t p,
+  const device_density_channels& den, const BasisSet<double>& basis ) {
+
+  species_scope scope( this, p );
+
+  if( not allocated_terms.exc_vxc )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: Density/Basis Not Stack Allocated");
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+  if( not den.Ps )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: missing scalar density channel");
+
+  const auto nbf = global_dims.nbf;
+  if( (size_t)basis.nbf() != nbf )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: basis does not match allocated NBF");
+
+  if( den.ldps != (int)nbf ) GAUXC_GENERIC_EXCEPTION("LDPs must be NBF");
+  device_backend_->copy_async( nbf*nbf, den.Ps, static_stack.dmat_s_device,
+    "MP P_scalar H2D" );
+
+  // A two-channel species has a Z density matrix allocated; the alpha-only
+  // channel (§1.5) deliberately does not, and its Pz is exactly Ps.
+  if( static_stack.dmat_z_device ) {
+    if( not den.Pz )
+      GAUXC_GENERIC_EXCEPTION("MultiParticle: missing Z density channel");
+    if( den.ldpz != (int)nbf ) GAUXC_GENERIC_EXCEPTION("LDPz must be NBF");
+    device_backend_->copy_async( nbf*nbf, den.Pz, static_stack.dmat_z_device,
+      "MP P_z H2D" );
+  }
+
+  device_backend_->copy_async( basis.nshells(), basis.data(),
+    static_stack.shells_device, "MP Shells H2D" );
+
+  device_backend_->master_queue_synchronize();
+}
+
+
+void XCDeviceStackData::zero_exc_vxc_integrands_multiparticle(
+  const multiparticle_tracker& mp ) {
+
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+  const size_t np = mp.nspecies();
+  if( np != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: species count does not match init_species");
+
+  for( size_t p = 0; p < np; ++p ) {
+    if( not mp.species.at(p).participates ) continue;
+    species_scope scope( this, p );
+    zero_exc_vxc_integrands( mp.species_terms(p) );
+  }
+
+  if( mp_ninter_ )
+    device_backend_->set_zero( mp_ninter_, mp_static.inter_exc_device,
+      "MP Inter EXC Zero" );
+}
+
+
+void XCDeviceStackData::retrieve_exc_vxc_integrands_multiparticle(
+  const multiparticle_tracker& mp, double* intra_EXC, double* inter_EXC,
+  double* N_EL, const std::vector<device_vxc_channels>& vxc ) {
+
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+  const size_t np = mp.nspecies();
+  if( np != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: species count does not match init_species");
+  if( mp.do_vxc and vxc.size() != np )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: one VXC channel set per species is required");
+
+  // Alpha-only species produce a single accumulator which is bitwise the Z
+  // channel as well (§1.5/§1.7): the D2H lands in VXCs and is mirrored on the
+  // host once every device copy has completed.
+  struct alpha_mirror { const double* src; double* dst; size_t n; };
+  std::vector<alpha_mirror> mirrors;
+
+  for( size_t p = 0; p < np; ++p ) {
+    const auto& s = mp.species.at(p);
+    if( not s.participates ) continue;
+    species_scope scope( this, p );
+
+    const auto nbf = global_dims.nbf;
+
+    if( intra_EXC )
+      device_backend_->copy_async( 1, static_stack.exc_device, intra_EXC + p,
+        "MP EXC D2H" );
+    if( N_EL )
+      device_backend_->copy_async( 1, static_stack.nel_device, N_EL + p,
+        "MP NEL D2H" );
+
+    if( not (mp.do_vxc and s.build_vxc) ) continue;
+    const auto& ch = vxc.at(p);
+
+    if( ch.VXCs ) {
+      if( ch.ldvxcs != (int)nbf ) GAUXC_GENERIC_EXCEPTION("LDVXCs must be NBF");
+      device_backend_->copy_async( nbf*nbf, static_stack.vxc_s_device, ch.VXCs,
+        "MP VXCs D2H" );
+    }
+
+    if( ch.VXCz ) {
+      if( ch.ldvxcz != (int)nbf ) GAUXC_GENERIC_EXCEPTION("LDVXCz must be NBF");
+      if( static_stack.vxc_z_device ) {
+        device_backend_->copy_async( nbf*nbf, static_stack.vxc_z_device,
+          ch.VXCz, "MP VXCz D2H" );
+      } else if( s.alpha_only ) {
+        if( not ch.VXCs )
+          GAUXC_GENERIC_EXCEPTION("MultiParticle: alpha-only VXCz requires VXCs");
+        mirrors.push_back( alpha_mirror{ ch.VXCs, ch.VXCz, nbf*nbf } );
+      } else {
+        GAUXC_GENERIC_EXCEPTION("MultiParticle: no Z VXC accumulator allocated");
+      }
+    }
+  }
+
+  if( mp_ninter_ and inter_EXC )
+    device_backend_->copy_async( mp_ninter_, mp_static.inter_exc_device,
+      inter_EXC, "MP Inter EXC D2H" );
+
+  // Unlike the single-species retrieval this synchronizes: the alpha-only
+  // host mirror must observe the completed D2H of the scalar channel.
+  device_backend_->master_queue_synchronize();
+  for( const auto& m : mirrors ) std::copy_n( m.src, m.n, m.dst );
+}
+
+
+void XCDeviceStackData::populate_submat_maps_multiparticle(
+  const multiparticle_tracker& mp,
+  host_task_iterator task_begin, host_task_iterator task_end,
+  const std::vector<const BasisSetMap*>& basis_maps ) {
+
+  const size_t np = mp.nspecies();
+  if( np != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: species count does not match init_species");
+  if( basis_maps.size() != np )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: one basis map per species is required");
+
+  for( size_t p = 0; p < np; ++p ) {
+    const auto& s = mp.species.at(p);
+    if( not s.participates ) continue;
+    if( not basis_maps[p] )
+      GAUXC_GENERIC_EXCEPTION("MultiParticle: missing basis map for a participating species");
+    species_scope scope( this, p );
+    populate_submat_maps( s.nbf, task_begin, task_end, *basis_maps[p] );
+  }
+}
+
+
+XCDeviceStackData::host_task_iterator
+  XCDeviceStackData::generate_buffers_multiparticle(
+    const multiparticle_tracker& mp,
+    const std::vector<const BasisSetMap*>& basis_maps,
+    host_task_iterator task_begin, host_task_iterator task_end ) {
+
+  const size_t np = mp.nspecies();
+  if( np != nspecies_ )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: species count does not match init_species");
+  if( basis_maps.size() != np )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: one basis map per species is required");
+
+  // Which species owns the shared grid arrays (points + weights)?  Every
+  // species evaluates the SAME immutable molecular grid, so exactly one copy
+  // is allocated and packed and the rest alias it.
+  size_t grid_owner = np;
+  for( size_t p = 0; p < np; ++p )
+    if( mp.species.at(p).participates ) { grid_owner = p; break; }
+  if( grid_owner == np )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: no participating species");
+
+  // Cache per-species term trackers once (axiom 5: no re-resolution in a loop)
+  std::vector<integrator_term_tracker> terms(np);
+  for( size_t p = 0; p < np; ++p )
+    if( mp.species.at(p).participates ) terms[p] = mp.species_terms(p);
+
+  const size_t species_state_reentry = active_species_;
+  mp_active_ = true;
+
+  // ---- 1. Static (batch-size independent) reservation, summed over species
+  size_t static_req = 0;
+  for( size_t p = 0; p < np; ++p ) {
+    if( not mp.species.at(p).participates ) continue;
+    select_species(p);
+    static_req += get_static_mem_requirement();
+  }
+  select_species(grid_owner);
+
+  if( static_req > dynmem_sz ) {
+    mp_active_ = false;
+    GAUXC_GENERIC_EXCEPTION("Insufficient memory to even start!");
+  }
+  size_t mem_left = dynmem_sz - static_req;
+
+  // ---- 2. Batch size: EVERY participating species must be resident for the
+  //         same task, so the per-task requirement is the sum over species.
+  //         Failing to make this species-aware is design risk R1.
+  const size_t mp_dyn_bytes_per_point =
+    mp_dyn_doubles_per_point * sizeof(double);
+  size_t est_bytes = 0;
+  host_task_iterator task_it = task_begin;
+  while( task_it != task_end ) {
+
+    size_t mem_req_batch = 0;
+    for( size_t p = 0; p < np; ++p ) {
+      if( not mp.species.at(p).participates ) continue;
+      select_species(p);
+      mp_grid_owner_ = ( p == grid_owner );
+      mem_req_batch += get_mem_req( terms[p], *task_it );
+    }
+    // Shared inter-species scratch (§1.6) + slop for its aligned allocations
+    mem_req_batch += mp_dyn_bytes_per_point * task_it->points.size()
+                   + mp_dyn_nalloc * 256;
+
+    if( mem_req_batch > mem_left ) break;
+    mem_left  -= mem_req_batch;
+    est_bytes += mem_req_batch;
+    task_it++;
+  }
+  select_species(grid_owner);
+  mp_grid_owner_ = true;
+
+  if( task_it == task_begin ) {
+    mp_active_ = false;
+    GAUXC_GENERIC_EXCEPTION("Insufficient device memory for a single multiparticle task");
+  }
+
+  // ---- 3. Carve the arena once, sequentially, across all species
+  device_buffer_t buf{ dynmem_ptr, dynmem_sz };
+  double* shared_points_x = nullptr;
+  double* shared_points_y = nullptr;
+  double* shared_points_z = nullptr;
+  double* shared_weights  = nullptr;
+
+  for( size_t p = 0; p < np; ++p ) {
+    if( not mp.species.at(p).participates ) continue;
+    if( not basis_maps[p] )
+      GAUXC_GENERIC_EXCEPTION("MultiParticle: missing basis map for a participating species");
+
+    select_species(p);
+    mp_grid_owner_ = ( p == grid_owner );
+
+    buf = allocate_dynamic_stack( terms[p], task_begin, task_it, buf );
+
+    if( mp_grid_owner_ ) {
+      shared_points_x = base_stack.points_x_device;
+      shared_points_y = base_stack.points_y_device;
+      shared_points_z = base_stack.points_z_device;
+      shared_weights  = base_stack.weights_device;
+    } else {
+      // Alias the single packed copy of the immutable grid into this species'
+      // task descriptors instead of allocating and copying identical arrays.
+      base_stack.points_x_device = shared_points_x;
+      base_stack.points_y_device = shared_points_y;
+      base_stack.points_z_device = shared_points_z;
+      base_stack.weights_device  = shared_weights;
+    }
+
+    pack_and_send( terms[p], task_begin, task_it, *basis_maps[p] );
+  }
+  select_species(grid_owner);
+  mp_grid_owner_ = true;
+
+  // ---- 4. Shared inter-species scratch from whatever remains
+  mp_dyn.reset();
+  {
+    auto [ptr, sz] = buf;
+    buffer_adaptor mem( ptr, sz );
+    const size_t msz = total_npts_task_batch;
+    const size_t aln = 256;
+    mp_dyn.rho_lhs_device       = mem.aligned_alloc<double>(   msz, aln, csl );
+    mp_dyn.rho_rhs_device       = mem.aligned_alloc<double>(   msz, aln, csl );
+    mp_dyn.pair_den_device      = mem.aligned_alloc<double>( 2*msz, aln, csl );
+    mp_dyn.pair_eps_device      = mem.aligned_alloc<double>(   msz, aln, csl );
+    mp_dyn.pair_vrho_device     = mem.aligned_alloc<double>( 2*msz, aln, csl );
+    mp_dyn.pair_vrho_lhs_device = mem.aligned_alloc<double>(   msz, aln, csl );
+    mp_dyn.pair_vrho_rhs_device = mem.aligned_alloc<double>(   msz, aln, csl );
+    mp_dyn.wtf_device           = mem.aligned_alloc<double>(   msz, aln, csl );
+    buf = device_buffer_t{ mem.stack(), mem.nleft() };
+  }
+
+  {
+    auto [ptr, sz] = buf;
+    (void)sz;
+    mp_batch_dyn_used_ = (size_t)( (char*)ptr - (char*)dynmem_ptr );
+  }
+  mp_batch_static_req_ = static_req;
+  mp_batch_est_bytes_  = est_bytes;
+  mp_batch_ntasks_     = std::distance( task_begin, task_it );
+
+  mp_active_ = false;
+  select_species(species_state_reentry);
+  return task_it;
 }
 
 void XCDeviceStackData::allocate_static_data_weights( int32_t natoms ) {
@@ -763,7 +1176,15 @@ size_t XCDeviceStackData::get_mem_req(
   const size_t npts  = points.size();
 
   required_term_storage reqt(terms);
-  
+
+  // Multiparticle: the grid points/weights are shared by every species and are
+  // therefore charged to (and allocated by) exactly one of them.  Outside a
+  // multiparticle batch `mp_grid_owner_` is always true.
+  if( not mp_grid_owner_ ) {
+    reqt.grid_points  = false;
+    reqt.grid_weights = false;
+  }
+
   size_t mem_req = 
     // Grid
     reqt.grid_points_size (npts)  * sizeof(double) + 
@@ -811,6 +1232,11 @@ size_t XCDeviceStackData::get_mem_req(
     reqt.grid_FXC_B_size(npts) * sizeof(double) +
     reqt.grid_FXC_C_size(npts) * sizeof(double);
 
+  // Alpha-only proton channel (§1.5): RKS-shaped storage plus the polarized
+  // vrho_pos / vrho_neg arrays that the stock UKS Z-matrix kernel consumes.
+  if( reqt.grid_vrho and alpha_only_vrho() )
+    mem_req += 2 * npts * sizeof(double);
+
   return mem_req;
 }
 
@@ -838,6 +1264,15 @@ XCDeviceStackData::device_buffer_t XCDeviceStackData::allocate_dynamic_stack(
 
 
   required_term_storage reqt(terms);
+
+  // Multiparticle: the grid points/weights are allocated once by the owning
+  // species; every other species aliases them (see
+  // generate_buffers_multiparticle).  Always true outside a MP batch.
+  if( not mp_grid_owner_ ) {
+    reqt.grid_points  = false;
+    reqt.grid_weights = false;
+  }
+
   const size_t msz = total_npts_task_batch;
   const size_t aln = 256;
   
@@ -931,6 +1366,12 @@ XCDeviceStackData::device_buffer_t XCDeviceStackData::allocate_dynamic_stack(
       base_stack.vrho_neg_eval_device = mem.aligned_alloc<double>(msz, aln, csl); 
     } else {          
       base_stack.vrho_eval_device = mem.aligned_alloc<double>(msz, aln, csl);
+      // Alpha-only proton channel (§1.5): single-channel vrho, but the stock
+      // UKS Z-matrix kernel is reused verbatim and reads vrho_pos/vrho_neg.
+      if( alpha_only_vrho() ) {
+        base_stack.vrho_pos_eval_device = mem.aligned_alloc<double>(msz, aln, csl);
+        base_stack.vrho_neg_eval_device = mem.aligned_alloc<double>(msz, aln, csl);
+      }
     }
   }
 
@@ -1191,6 +1632,14 @@ void XCDeviceStackData::pack_and_send( integrator_term_tracker terms,
   host_task_iterator task_begin, host_task_iterator task_end, const BasisSetMap& ) {
 
   if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+
+  // Multiparticle: only the grid-owning species packs and sends the shared,
+  // immutable grid; every other species slices the same device arrays in its
+  // own task descriptors.  Always the owner outside a MP batch.
+  if( not mp_grid_owner_ ) {
+    device_backend_->master_queue_synchronize();
+    return;
+  }
 
   // Host data packing arrays
   std::vector<double> points_x_pack, points_y_pack, points_z_pack;

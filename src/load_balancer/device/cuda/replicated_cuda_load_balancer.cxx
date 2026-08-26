@@ -28,9 +28,11 @@ struct CollisionDetectionCudaData {
     // Inputs
     double* low_points_device;
     double* high_points_device;
-    double* centers_device;
-    double* radii_device;
-    size_t* shell_sizes_device;
+    // Sphere data is per basis set: the cube list is basis independent, but
+    // every basis screens against its own shells.
+    std::vector<double*> centers_device;
+    std::vector<double*> radii_device;
+    std::vector<size_t*> shell_sizes_device;
     // Outputs
     int32_t position_list_length;
     int32_t* position_list_device;
@@ -80,10 +82,21 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
   std::vector<size_t> global_workload( world_size, 0 );   
 
   const auto natoms           = this->mol_->natoms();
-  const size_t nspheres       = (*this->basis_).size();
+  const size_t nbasis         = this->basis_count();
   const size_t num_atom_batch = util::div_ceil(natoms, atBatchSz);
   const size_t max_nbatches   = mg_->max_nbatches() * atBatchSz;
-  const size_t LD_bit         = util::div_ceil(nspheres, 32);
+
+  // Per-basis sphere counts and collision-bitfield leading dimensions. 
+  // Device scratch shared between bases is sized at the maximum over bases.
+  std::vector<size_t> nspheres_vec( nbasis );
+  std::vector<size_t> LD_bit_vec( nbasis );
+  size_t max_LD_bit = 1;
+  for( size_t ib = 0; ib < nbasis; ++ib ) {
+    const size_t nspheres = this->basis(ib).size();
+    nspheres_vec[ib] = nspheres;
+    LD_bit_vec[ib]   = util::div_ceil(nspheres, 32);
+    max_LD_bit       = std::max( max_LD_bit, LD_bit_vec[ib] );
+  }
 
   CollisionDetectionCudaData data;
   cudaStream_t master_stream = 0;
@@ -91,39 +104,50 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
   std::vector< XCTask > temp_tasks;              temp_tasks.reserve( max_nbatches );
   std::vector<std::array<double,3>> low_points;  low_points.reserve( max_nbatches );
   std::vector<std::array<double,3>> high_points; high_points.reserve( max_nbatches );
-  std::vector<std::array<double,3>> centers;     centers.reserve(nspheres);
-  std::vector<double> radii;                     radii.reserve(nspheres);
-  std::vector<size_t> shell_sizes;               shell_sizes.reserve(nspheres);
-  // These two vectors are populated by cuda memcopies on their data pointer
-  // So maybe we should be resizing them instead of just adding capacity?
-  std::vector<int32_t> pos_list_idx;             pos_list_idx.reserve(max_nbatches);
-  std::vector<size_t> nbe_vec;                   nbe_vec.reserve(max_nbatches);
 
+  // Per-basis host-side collision detection results for the current cube list.
   // The postion list is the largest struction so I am using pinned memory for the improved bandwidth
-  pinned_vector<int32_t> position_list;
-  
-  data.temp_storage_bytes = compute_scratch(max_nbatches, data.counts_device);
-  data.temp_storage_device = util::cuda_malloc<char>(data.temp_storage_bytes); // char is 1 byte
+  std::vector<pinned_vector<int32_t>> position_lists( nbasis );
+  std::vector<std::vector<int32_t>>   pos_list_idxs( nbasis );
+  std::vector<std::vector<size_t>>    nbe_vecs( nbasis );
 
   data.low_points_device   = util::cuda_malloc<double>(max_nbatches * 3);
   data.high_points_device  = util::cuda_malloc<double>(max_nbatches * 3);
-  data.collisions_device   = util::cuda_malloc<int32_t>(LD_bit * max_nbatches);
+  data.collisions_device   = util::cuda_malloc<int32_t>(max_LD_bit * max_nbatches);
   data.nbe_list_device     = util::cuda_malloc<size_t>(max_nbatches);
   data.counts_device       = util::cuda_malloc<int32_t>(max_nbatches);
 
-  data.centers_device      = util::cuda_malloc<double>(nspheres * 3);
-  data.radii_device        = util::cuda_malloc<double>(nspheres);
-  data.shell_sizes_device  = util::cuda_malloc<size_t>(nspheres);
+  data.temp_storage_bytes = compute_scratch(max_nbatches, data.counts_device);
+  data.temp_storage_device = util::cuda_malloc<char>(data.temp_storage_bytes); // char is 1 byte
 
-  for(auto& shell : (*this->basis_)) {
-    centers.push_back(shell.O());
-    radii.push_back(shell.cutoff_radius());
-    shell_sizes.push_back(shell.size());
+  data.centers_device.assign( nbasis, nullptr );
+  data.radii_device.assign( nbasis, nullptr );
+  data.shell_sizes_device.assign( nbasis, nullptr );
+
+  for( size_t ib = 0; ib < nbasis; ++ib ) {
+
+    const size_t nspheres = nspheres_vec[ib];
+    if( not nspheres ) continue;
+
+    std::vector<std::array<double,3>> centers;     centers.reserve(nspheres);
+    std::vector<double> radii;                     radii.reserve(nspheres);
+    std::vector<size_t> shell_sizes;               shell_sizes.reserve(nspheres);
+
+    for(const auto& shell : this->basis(ib)) {
+      centers.push_back(shell.O());
+      radii.push_back(shell.cutoff_radius());
+      shell_sizes.push_back(shell.size());
+    }
+
+    data.centers_device[ib]     = util::cuda_malloc<double>(nspheres * 3);
+    data.radii_device[ib]       = util::cuda_malloc<double>(nspheres);
+    data.shell_sizes_device[ib] = util::cuda_malloc<size_t>(nspheres);
+
+    util::cuda_copy(nspheres * 3, data.centers_device[ib], centers[0].data(), "Centers HtoD");
+    util::cuda_copy(nspheres, data.radii_device[ib], radii.data(), "Radii HtoD");
+    util::cuda_copy(nspheres, data.shell_sizes_device[ib], shell_sizes.data(), "ShellSize HtoD");
+
   }
-
-  util::cuda_copy(nspheres * 3, data.centers_device, centers[0].data(), "Centers HtoD");
-  util::cuda_copy(nspheres, data.radii_device, radii.data(), "Radii HtoD");
-  util::cuda_copy(nspheres, data.shell_sizes_device, shell_sizes.data(), "ShellSize HtoD");
 
   // For batching of multiple atom screening
   for (size_t atom_batch = 0; atom_batch < num_atom_batch; ++atom_batch) {
@@ -159,43 +183,58 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
     }
 
     //---------------------------------------------------------------------
-    // Device collision detection step  
+    // Device collision detection step. The cube list is basis independent, so
+    // the two collision kernels are run once per basis over the same cubes.
     const size_t ncubes = low_points.size();
     util::cuda_copy(ncubes * 3, data.low_points_device, low_points[0].data(), "Low points HtoD");
     util::cuda_copy(ncubes * 3, data.high_points_device, high_points[0].data(), "High points HtoD");
 
-    collision_detection(
-      ncubes, nspheres, LD_bit,
-      data.low_points_device, data.high_points_device,
-      data.centers_device, data.radii_device, 
-      data.temp_storage_bytes, data.temp_storage_device,
-      data.collisions_device, data.counts_device,
-      master_stream
-    );
+    for( size_t ib = 0; ib < nbasis; ++ib ) {
 
-    // Copy total number of collisions back to host to allocate result array
-    int32_t total_collisions;
-    util::cuda_copy(1, &total_collisions, data.counts_device + ncubes - 1, "Total collisions DtoH");
-    data.position_list_device = util::cuda_malloc<int32_t>(total_collisions);
+      auto& position_list = position_lists[ib];
+      auto& pos_list_idx  = pos_list_idxs[ib];
+      auto& nbe_vec       = nbe_vecs[ib];
 
-    compute_position_list(
-      ncubes, nspheres, LD_bit,
-      data.shell_sizes_device,
-      data.collisions_device,
-      data.counts_device,
-      data.position_list_device,
-      data.nbe_list_device,
-      master_stream
-    );
+      pos_list_idx.assign( ncubes, 0 );
+      nbe_vec.assign( ncubes, 0 );
 
-    position_list.reserve(total_collisions);
+      const size_t nspheres = nspheres_vec[ib];
+      if( not nspheres ) { position_list.clear(); continue; }
 
-    util::cuda_device_sync();
-    // Copy results back to host
-    util::cuda_copy(total_collisions, position_list.data(), data.position_list_device, "Position List DtoH");
-    util::cuda_copy(ncubes, pos_list_idx.data(), data.counts_device, "Position List Idx DtoH");
-    util::cuda_copy(ncubes, nbe_vec.data(), data.nbe_list_device, "NBE counts DtoH");
-    util::cuda_free(data.position_list_device);
+      collision_detection(
+        ncubes, nspheres, LD_bit_vec[ib],
+        data.low_points_device, data.high_points_device,
+        data.centers_device[ib], data.radii_device[ib],
+        data.temp_storage_bytes, data.temp_storage_device,
+        data.collisions_device, data.counts_device,
+        master_stream
+      );
+
+      // Copy total number of collisions back to host to allocate result array
+      int32_t total_collisions;
+      util::cuda_copy(1, &total_collisions, data.counts_device + ncubes - 1, "Total collisions DtoH");
+      data.position_list_device = util::cuda_malloc<int32_t>(total_collisions);
+
+      compute_position_list(
+        ncubes, nspheres, LD_bit_vec[ib],
+        data.shell_sizes_device[ib],
+        data.collisions_device,
+        data.counts_device,
+        data.position_list_device,
+        data.nbe_list_device,
+        master_stream
+      );
+
+      position_list.resize(total_collisions);
+
+      util::cuda_device_sync();
+      // Copy results back to host
+      util::cuda_copy(total_collisions, position_list.data(), data.position_list_device, "Position List DtoH");
+      util::cuda_copy(ncubes, pos_list_idx.data(), data.counts_device, "Position List Idx DtoH");
+      util::cuda_copy(ncubes, nbe_vec.data(), data.nbe_list_device, "NBE counts DtoH");
+      util::cuda_free(data.position_list_device);
+
+    }
 
     low_points.clear();
     high_points.clear();
@@ -215,7 +254,12 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
       for( size_t ibatch = 0; ibatch < nbatches; ++ibatch ) {
         auto [ npts, pts_b, pts_en, w_b, w_en ] = (batcher.begin() + ibatch).range();
         XCTask task = std::move( temp_tasks.at( idx ) );
-        task.bfn_screening.nbe  = nbe_vec[idx];
+
+        // Screening data for every basis, in basis order
+        task.bfn_screenings.resize( nbasis );
+        for( size_t ib = 0; ib < nbasis; ++ib )
+          task.bfn_screenings[ib].nbe = static_cast<int32_t>( nbe_vecs[ib][idx] );
+        task.bfn_screening.nbe = task.bfn_screenings.front().nbe;
 
         // Update npts
         task.npts = npts;
@@ -228,10 +272,18 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
         global_workload[ min_rank ] += task.cost( n_deriv, natoms );
 
         if( world_rank == min_rank ) {
-          auto shell_list = std::move( copy_shell_list(idx, pos_list_idx, position_list) );
-          // Course grain screening
-          if( shell_list.size() ) {
-            task.bfn_screening.shell_list = shell_list;
+
+          bool has_screened_basis = false;
+          for( size_t ib = 0; ib < nbasis; ++ib ) {
+            auto shell_list = copy_shell_list(idx, pos_list_idxs[ib], position_lists[ib]);
+            if( shell_list.size() ) has_screened_basis = true;
+            task.bfn_screenings[ib].shell_list = std::move(shell_list);
+          }
+
+          // Course grain screening: as on the host, the task is retained if
+          // *any* basis has a non-empty shell list
+          if( has_screened_basis ) {
+            task.bfn_screening = task.bfn_screenings.front();
 
             // Get local copy of points weights
             std::vector<std::array<double,3>> points(pts_b, pts_en);
@@ -256,8 +308,20 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
     if( a.iParent < b.iParent )      return true;
     else if( a.iParent > b.iParent ) return false;
 
-    // Equal iParent: lex sort on shell list
-    else return a.bfn_screening.shell_list < b.bfn_screening.shell_list;
+    // Equal iParent: lex sort on all active basis screening data.
+    if( not a.bfn_screenings.empty() or not b.bfn_screenings.empty() ) {
+      auto screen_less = []( const auto& x, const auto& y ) {
+        if( x.shell_list < y.shell_list ) return true;
+        if( y.shell_list < x.shell_list ) return false;
+        return x.shell_pair_list < y.shell_pair_list;
+      };
+      return std::lexicographical_compare(
+        a.bfn_screenings.begin(), a.bfn_screenings.end(),
+        b.bfn_screenings.begin(), b.bfn_screenings.end(),
+        screen_less );
+    }
+
+    return a.bfn_screening.shell_list < b.bfn_screening.shell_list;
 
   };
 
@@ -311,9 +375,12 @@ std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const 
   // Free all device memory
   util::cuda_free(data.low_points_device);
   util::cuda_free(data.high_points_device);
-  util::cuda_free(data.centers_device);
-  util::cuda_free(data.radii_device);
-  util::cuda_free(data.shell_sizes_device);
+  for( size_t ib = 0; ib < nbasis; ++ib ) {
+    if( not nspheres_vec[ib] ) continue;
+    util::cuda_free(data.centers_device[ib]);
+    util::cuda_free(data.radii_device[ib]);
+    util::cuda_free(data.shell_sizes_device[ib]);
+  }
   util::cuda_free(data.collisions_device);
   util::cuda_free(data.nbe_list_device);
   util::cuda_free(data.counts_device);

@@ -127,6 +127,24 @@ struct Scheme1DataBase : public XCDeviceAoSData {
     host_task_iterator begin, host_task_iterator end, 
     const BasisSetMap& basis_map ) override;
 
+  /// Per-species Scheme1 context (see XCDeviceStackData's multi-species notes).
+  /// The shell lists and the shell->task map are keyed on a basis set and are
+  /// therefore per species; the shell-pair (Coulomb/EXX) state is not, because
+  /// sn-LinK is single-species only.
+  struct scheme1_species_state {
+    size_t             total_nshells_bfn_task_batch = 0;
+    scheme1_data       scheme1_stack;
+    collocation_data   collocation_stack;
+    shell_to_task_data shell_to_task_stack;
+    std::vector<AngularMomentumShellToTaskBatch> l_batched_shell_to_task;
+  };
+  std::vector<scheme1_species_state> scheme1_species_;
+
+protected:
+  void store_species_state( size_t p ) override;
+  void load_species_state( size_t p ) override;
+  void resize_species_slots( size_t np ) override;
+
 };
 
 }

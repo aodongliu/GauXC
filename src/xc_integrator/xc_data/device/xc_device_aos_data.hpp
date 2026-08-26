@@ -97,6 +97,28 @@ struct XCDeviceAoSData : public XCDeviceStackData {
   std::vector<XCDeviceTask> host_device_tasks; ///< Task indirection in host memory
   aos_stack_data aos_stack;
 
+  /** Per-species AoS context (see XCDeviceStackData's multi-species notes).
+   *
+   *  `device_tasks` / `host_device_tasks` are per species: every species owns
+   *  its own XCDeviceTask array over the shared grid, so every existing kernel
+   *  keeps reading `XCDeviceTask::bfn_screening` unchanged.  These lists are
+   *  *compact* -- a task where this species screens to nbe == 0 is not packed,
+   *  and therefore never reaches a launch (design axiom 3).
+   */
+  struct aos_species_state {
+    size_t total_nbe_bfn_task_batch      = 0;
+    size_t total_nbe_scr_task_batch      = 0;
+    size_t total_nbe_bfn_npts_task_batch = 0;
+    size_t total_ncut_bfn_task_batch     = 0;
+    size_t total_nblock_bfn_task_batch   = 0;
+    size_t total_nbe_cou_npts_task_batch = 0;
+    size_t total_ncut_cou_task_batch     = 0;
+    size_t total_nblock_cou_task_batch   = 0;
+    aos_stack_data            aos_stack;
+    std::vector<XCDeviceTask> host_device_tasks;
+  };
+  std::vector<aos_species_state> aos_species_;
+
 
   XCDeviceAoSData() = delete;
   inline XCDeviceAoSData( const DeviceRuntimeEnvironment& rt ) :
@@ -130,6 +152,11 @@ struct XCDeviceAoSData : public XCDeviceStackData {
   virtual void reset_allocations() override;
 
   void populate_submat_maps( size_t, host_task_iterator, host_task_iterator, const BasisSetMap& ) override;
+
+protected:
+  void store_species_state( size_t p ) override;
+  void load_species_state( size_t p ) override;
+  void resize_species_slots( size_t np ) override;
 
 };
 

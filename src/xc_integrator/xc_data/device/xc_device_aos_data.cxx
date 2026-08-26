@@ -21,16 +21,59 @@ void XCDeviceAoSData::reset_allocations() {
   aos_stack.reset();
 }
 
+void XCDeviceAoSData::store_species_state( size_t p ) {
+  XCDeviceStackData::store_species_state(p);
+  auto& s = aos_species_.at(p);
+  s.total_nbe_bfn_task_batch      = total_nbe_bfn_task_batch;
+  s.total_nbe_scr_task_batch      = total_nbe_scr_task_batch;
+  s.total_nbe_bfn_npts_task_batch = total_nbe_bfn_npts_task_batch;
+  s.total_ncut_bfn_task_batch     = total_ncut_bfn_task_batch;
+  s.total_nblock_bfn_task_batch   = total_nblock_bfn_task_batch;
+  s.total_nbe_cou_npts_task_batch = total_nbe_cou_npts_task_batch;
+  s.total_ncut_cou_task_batch     = total_ncut_cou_task_batch;
+  s.total_nblock_cou_task_batch   = total_nblock_cou_task_batch;
+  s.aos_stack                     = aos_stack;
+  s.host_device_tasks             = host_device_tasks;
+}
+
+void XCDeviceAoSData::load_species_state( size_t p ) {
+  XCDeviceStackData::load_species_state(p);
+  const auto& s = aos_species_.at(p);
+  total_nbe_bfn_task_batch      = s.total_nbe_bfn_task_batch;
+  total_nbe_scr_task_batch      = s.total_nbe_scr_task_batch;
+  total_nbe_bfn_npts_task_batch = s.total_nbe_bfn_npts_task_batch;
+  total_ncut_bfn_task_batch     = s.total_ncut_bfn_task_batch;
+  total_nblock_bfn_task_batch   = s.total_nblock_bfn_task_batch;
+  total_nbe_cou_npts_task_batch = s.total_nbe_cou_npts_task_batch;
+  total_ncut_cou_task_batch     = s.total_ncut_cou_task_batch;
+  total_nblock_cou_task_batch   = s.total_nblock_cou_task_batch;
+  aos_stack                     = s.aos_stack;
+  host_device_tasks             = s.host_device_tasks;
+}
+
+void XCDeviceAoSData::resize_species_slots( size_t np ) {
+  XCDeviceStackData::resize_species_slots(np);
+  aos_species_.clear();
+  aos_species_.resize(np);
+}
+
 size_t XCDeviceAoSData::get_mem_req( integrator_term_tracker terms,
   const host_task_type& task ) {
 
   size_t base_size = XCDeviceStackData::get_mem_req(terms, task);
 
+  // A species may screen out of a kept multiparticle task entirely: the
+  // multi-basis load balancer keeps a task when ANY species screens in.  Such
+  // a task contributes no task-local storage for this species and has no
+  // submatrix map by construction.  Never taken for a single species.
+  if( not task_is_active(task) ) return base_size;
+
   required_term_storage reqt(terms);
 
+  const auto& bfn_screening    = host_bfn_screening(task);
   const auto& points           = task.points;
-  const auto& submat_cut_bfn   = task.bfn_screening.submat_map;
-  const auto& submat_block_bfn = task.bfn_screening.submat_block;
+  const auto& submat_cut_bfn   = bfn_screening.submat_map;
+  const auto& submat_block_bfn = bfn_screening.submat_block;
   if( reqt.task_submat_cut_bfn and 
     (!submat_cut_bfn.size() or !submat_block_bfn.size()) 
   )
@@ -45,7 +88,7 @@ size_t XCDeviceAoSData::get_mem_req( integrator_term_tracker terms,
 
   // Dimensions
   const size_t npts         = points.size();
-  const size_t nbe_bfn      = task.bfn_screening.nbe;
+  const size_t nbe_bfn      = bfn_screening.nbe;
   const size_t ncut_bfn     = submat_cut_bfn.size();
   const size_t nblock_bfn   = submat_block_bfn.size();
 
@@ -123,11 +166,18 @@ XCDeviceAoSData::device_buffer_t XCDeviceAoSData::allocate_dynamic_stack(
   total_nbe_cou_npts_task_batch = 0; 
   total_ncut_cou_task_batch     = 0; 
   total_nblock_cou_task_batch   = 0; 
+  size_t ntask_active           = 0;
   for( auto it = task_begin; it != task_end; ++it ) {
 
+    // Compact per-species task list: skip tasks this species screens out of.
+    // Unconditionally false for a single species.
+    if( not task_is_active(*it) ) continue;
+    ntask_active++;
+
+    const auto& bfn_screening    = host_bfn_screening(*it);
     const auto& points           = it->points;
-    const auto& submat_cut_bfn   = it->bfn_screening.submat_map;
-    const auto& submat_block_bfn = it->bfn_screening.submat_block;
+    const auto& submat_cut_bfn   = bfn_screening.submat_map;
+    const auto& submat_block_bfn = bfn_screening.submat_block;
     if( reqt.task_submat_cut_bfn and 
       (!submat_cut_bfn.size() or !submat_block_bfn.size()) 
     )
@@ -144,7 +194,7 @@ XCDeviceAoSData::device_buffer_t XCDeviceAoSData::allocate_dynamic_stack(
 
     const size_t ncut_bfn    = submat_cut_bfn.size();
     const size_t nblock_bfn  = submat_block_bfn.size();
-    const auto nbe_bfn       = it->bfn_screening.nbe;
+    const auto nbe_bfn       = bfn_screening.nbe;
 
     const size_t ncut_cou    = submat_cut_cou.size();
     const size_t nblock_cou  = submat_block_cou.size();
@@ -164,10 +214,9 @@ XCDeviceAoSData::device_buffer_t XCDeviceAoSData::allocate_dynamic_stack(
 
   }
   
-  // Device task indirection
+  // Device task indirection (compact: only the tasks this species screens into)
   if(reqt.task_indirection) {
-    const size_t ntask = std::distance( task_begin, task_end );
-    aos_stack.device_tasks = mem.aligned_alloc<XCDeviceTask>( ntask, csl );
+    aos_stack.device_tasks = mem.aligned_alloc<XCDeviceTask>( ntask_active, csl );
   }
   // Map packed to unpacked indices
   if(reqt.task_bfn_shell_indirection) {
@@ -307,12 +356,16 @@ void XCDeviceAoSData::pack_and_send(
   // Pack AoS data and construct indirections
   for( auto it = task_begin; it != task_end; ++it ) {
 
+    // Compact per-species task list (unconditionally active for one species)
+    if( not task_is_active(*it) ) continue;
+
+    const auto& bfn_screening    = host_bfn_screening(*it);
     const auto  iAtom            = it->iParent;
     const auto& points           = it->points;
     const auto dist_nearest      = it->dist_nearest;
 
-    const auto& submat_cut_bfn   = it->bfn_screening.submat_map;
-    const auto& submat_block_bfn = it->bfn_screening.submat_block;
+    const auto& submat_cut_bfn   = bfn_screening.submat_map;
+    const auto& submat_block_bfn = bfn_screening.submat_block;
     if( reqt.task_submat_cut_bfn and 
       (!submat_cut_bfn.size() or !submat_block_bfn.size()) 
     )
@@ -330,8 +383,8 @@ void XCDeviceAoSData::pack_and_send(
 
     const size_t ncut_bfn     = submat_cut_bfn.size();
     const size_t nblock_bfn   = submat_block_bfn.size();
-    const size_t nshells_bfn  = it->bfn_screening.shell_list.size();
-    const auto nbe_bfn        = it->bfn_screening.nbe;
+    const size_t nshells_bfn  = bfn_screening.shell_list.size();
+    const auto nbe_bfn        = bfn_screening.nbe;
 
     const size_t ncut_cou     = submat_cut_cou.size();
     const size_t nblock_cou   = submat_block_cou.size();
@@ -357,7 +410,7 @@ void XCDeviceAoSData::pack_and_send(
     if(reqt.task_bfn_shell_indirection) {
       std::vector<int32_t> bfn_indirection(nbe_bfn);
       auto bit = bfn_indirection.begin();
-      for( auto& sh : it->bfn_screening.shell_list ) {
+      for( auto& sh : bfn_screening.shell_list ) {
         auto sh_range = basis_map.shell_to_ao_range()[sh];
         for( auto j = sh_range.first; j < sh_range.second; ++j ) {
           *bit = j; ++bit;
@@ -385,7 +438,7 @@ void XCDeviceAoSData::pack_and_send(
       ht.cou_screening.nblock  = nblock_cou;
       ht.cou_screening.nshells = nshells_cou;
 
-      auto& shell_list_bfn = it->bfn_screening.shell_list;
+      auto& shell_list_bfn = bfn_screening.shell_list;
       ht.bfn_screening.ibf_begin = 
         shell_list_bfn.size() ?
         basis_map.shell_to_first_ao(shell_list_bfn[0]) : 0;
@@ -678,7 +731,24 @@ void XCDeviceAoSData::pack_and_send(
     buffer_adaptor FXC_Bz_z_mem( base_stack.FXC_Bz_z_eval_device, total_npts);
     buffer_adaptor FXC_C_z_mem(  base_stack.FXC_C_z_eval_device,  total_npts);
 
-    for( auto& task : host_device_tasks ) {
+    // The grid arrays (points, weights and every per-point function
+    // evaluation) span the WHOLE task batch and are indexed by *global* point
+    // offset, because the multiparticle EPC stage consumes two species'
+    // densities on the same points.  The AoS arrays are *compact*.  Walking the
+    // full host task range and directing the grid slices of a screened-out task
+    // into a throwaway descriptor satisfies both invariants with one loop and
+    // one allocation sequence.  For a single species every task is active,
+    // `discard` is never used, and the sequence is exactly what it was.
+    XCDeviceTask discard;
+    size_t idevtask = 0;
+    for( auto it = task_begin; it != task_end; ++it ) {
+
+      const bool task_active = task_is_active(*it);
+      if( task_active and idevtask >= host_device_tasks.size() )
+        GAUXC_GENERIC_EXCEPTION("Inconsistent device task count");
+      if( not task_active ) discard.npts = it->points.size();
+      XCDeviceTask& task = task_active ? host_device_tasks[idevtask++] : discard;
+
       const auto npts    = task.npts;
       const auto nbe_bfn     = task.bfn_screening.nbe;
       const auto ncut_bfn    = task.bfn_screening.ncut;
@@ -835,7 +905,9 @@ void XCDeviceAoSData::pack_and_send(
 
       if( reqt.grid_vrho ) {
         task.vrho =   vrho_mem.aligned_alloc<double>( npts*den_fac, csl);
-        if( is_pol ) {
+        // The alpha-only proton channel (§1.5) is stored RKS-shaped but reuses
+        // the stock UKS Z-matrix kernel, which reads vrho_pos / vrho_neg.
+        if( is_pol or alpha_only_vrho() ) {
           task.vrho_pos     = vrho_pos_mem.aligned_alloc<double>( npts, csl);
           task.vrho_neg     = vrho_neg_mem.aligned_alloc<double>( npts, csl); 
         }
@@ -1072,6 +1144,9 @@ void XCDeviceAoSData::pack_and_send(
 
     } // Loop over device tasks
 
+    if( idevtask != host_device_tasks.size() )
+      GAUXC_GENERIC_EXCEPTION("Inconsistent device task count");
+
   } // Setup indirection
 
 
@@ -1103,9 +1178,12 @@ void XCDeviceAoSData::populate_submat_maps(
 
   for( auto it = task_begin; it != task_end; ++it ) {
 
-    const auto& shell_list_bfn = it->bfn_screening.shell_list;
+    // Writes into the ACTIVE species' screening block; identical to
+    // `it->bfn_screening` whenever there is a single species context.
+    auto& bfn_screening = host_bfn_screening(*it);
+    const auto& shell_list_bfn = bfn_screening.shell_list;
     if( shell_list_bfn.size() ) {
-      std::tie( it->bfn_screening.submat_map, it->bfn_screening.submat_block ) = 
+      std::tie( bfn_screening.submat_map, bfn_screening.submat_block ) =
         gen_compressed_submat_map( basis_map, shell_list_bfn, N, submat_chunk_size );
     }
 

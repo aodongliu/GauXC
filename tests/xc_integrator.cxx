@@ -1100,12 +1100,24 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
     }
 
 #ifdef GAUXC_HAS_DEVICE
-    // The three seams a device multiparticle implementation has to remove.
+    // The remaining seams a device multiparticle implementation has to remove.
     // When they are removed these checks fail, in the change that removes them.
     {
+      // WP2a-1: the device LoadBalancer supports multiple basis sets. It must
+      // construct, produce tasks, and carry one screening record per basis in
+      // basis order, with the legacy singular screening aliasing basis 0.
       LoadBalancerFactory dev_lb_factory( ExecutionSpace::Device, "Replicated" );
-      CHECK_THROWS_WITH( dev_lb_factory.get_instance(rt, sys.mol, mg, sys.bases),
-        Catch::Contains("does not support multiple basis sets") );
+      auto dev_lb = dev_lb_factory.get_instance(rt, sys.mol, mg, sys.bases);
+      REQUIRE( dev_lb.basis_count() == 2 );
+      auto& dev_tasks = dev_lb.get_tasks();
+      REQUIRE_FALSE( dev_tasks.empty() );
+      bool dev_screenings_ok = true;
+      for( const auto& t : dev_tasks )
+        dev_screenings_ok = dev_screenings_ok and
+          t.bfn_screenings.size() == 2 and
+          t.bfn_screening.shell_list == t.basis_screening(0).shell_list and
+          t.bfn_screening.nbe == t.basis_screening(0).nbe;
+      CHECK( dev_screenings_ok );
 
       XCIntegratorFactory<matrix_type> dev_factory( ExecutionSpace::Device,
         "Replicated", "Default", "Default", "Default" );

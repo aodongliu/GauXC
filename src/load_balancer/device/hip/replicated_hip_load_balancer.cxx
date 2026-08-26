@@ -71,6 +71,10 @@ std::vector<int32_t> inline copy_shell_list(
 
 std::vector< XCTask > DeviceReplicatedLoadBalancer::create_local_tasks_() const  {
 
+  // Multi-basis (NEO multiparticle) screening is implemented for the CUDA only
+  if( this->basis_count() != 1 )
+    GAUXC_GENERIC_EXCEPTION("HIP LoadBalancer does not support multiple basis sets");
+
   const int32_t n_deriv = 1;
   const size_t atBatchSz = 256;
 

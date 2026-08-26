@@ -16,9 +16,11 @@
 #include <gauxc/basisset_map.hpp>
 #include <gauxc/shell_pair.hpp>
 #include <gauxc/molmeta.hpp>
+#include <gauxc/exceptions.hpp>
 //#include <gauxc/reduction_driver.hpp>
 #include <any>
 #include <cstring>
+#include <exception>
 #include "device/device_queue.hpp"
 
 namespace GauXC {
@@ -60,6 +62,92 @@ struct integrator_term_tracker {
     std::memset( this, 0, sizeof(integrator_term_tracker) );
   }
 };
+
+
+/******************************************************************************
+ *            Multiparticle (NEO) descriptors -- design Phase-2 §1.3          *
+ *                                                                            *
+ *  Design axiom 1: named channel / species descriptor structs, never          *
+ *  positional matrix arguments.  Every multiparticle entry point below takes  *
+ *  one of these instead of a `(S,Z,Y,X)` argument pack, which is what made    *
+ *  the single-species device path swappable in the first place.               *
+ *                                                                            *
+ *  These live here (rather than beside the enums) so that                     *
+ *  `multiparticle_tracker::species_terms()` can return a fully formed         *
+ *  `integrator_term_tracker`, keeping the "resolve config once into an        *
+ *  immutable descriptor" axiom (5) inside the descriptor itself.              *
+ ******************************************************************************/
+
+/// Immutable per-species configuration for one multiparticle EXC/VXC call.
+struct multiparticle_species_desc {
+  size_t               index        = 0;   ///< species index == LB basis index
+  int32_t              nbf          = 0;
+  int32_t              nshells      = 0;
+  integrator_ks_scheme scheme       = _UNDEF_SCHEME; ///< RKS or UKS only
+  integrator_xc_approx approx       = _UNDEF_APPROX; ///< LDA or GGA only
+  double               xmat_fac     = 1.0;           ///< 2.0 iff RKS
+  bool                 has_intra    = false;         ///< has an intra-species functional
+  bool                 build_vxc    = false;
+  bool                 participates = false;
+  bool                 alpha_only   = false;         ///< §1.5 alpha-only channel
+};
+
+/// One electron / quantum-particle interaction pair (EPC).
+struct multiparticle_pair_desc {
+  size_t electron = 0;
+  size_t particle = 0;
+  bool   active   = false;
+};
+
+/// The full resolved description of a multiparticle EXC/VXC evaluation.
+struct multiparticle_tracker {
+  std::vector<multiparticle_species_desc> species;
+  std::vector<multiparticle_pair_desc>    pairs;
+  bool do_vxc = false;
+
+  inline size_t nspecies() const { return species.size(); }
+
+  inline size_t nactive_pairs() const {
+    size_t n = 0;
+    for( const auto& p : pairs ) if( p.active ) n++;
+    return n;
+  }
+
+  /** Storage-shaping term tracker for species `p`.
+   *
+   *  The alpha-only proton channel (§1.5) is *stored* as a single channel --
+   *  one density matrix, one VXC accumulator, no `den_z` grid array -- even
+   *  though its API-level scheme is UKS.  Reporting RKS here is what makes
+   *  `required_term_storage` allocate that shape; the extra `vrho_pos` /
+   *  `vrho_neg` arrays the stock UKS Z-matrix kernel needs are added
+   *  separately by the data layer (see `XCDeviceStackData::alpha_only_vrho`).
+   */
+  inline integrator_term_tracker species_terms( size_t p ) const {
+    const auto& s = species.at(p);
+    integrator_term_tracker t;
+    t.exc_vxc   = true;
+    t.ks_scheme = s.alpha_only ? RKS : s.scheme;
+    t.xc_approx = s.approx;
+    return t;
+  }
+};
+
+/// Named density channels for one species (replaces positional Ps/Pz/Py/Px).
+struct device_density_channels {
+  const double* Ps   = nullptr;
+  int32_t       ldps = 0;
+  const double* Pz   = nullptr;
+  int32_t       ldpz = 0;
+};
+
+/// Named VXC channels for one species (replaces positional VXCs/z/y/x).
+struct device_vxc_channels {
+  double* VXCs    = nullptr;
+  int32_t ldvxcs  = 0;
+  double* VXCz    = nullptr;
+  int32_t ldvxcz  = 0;
+};
+
 
 #define PRDVL(pred,val) (pred) ? (val) : 0ul
 
@@ -781,6 +869,155 @@ struct XCDeviceData {
   virtual double* fxc_x_device_data() = 0;
   virtual device_queue queue() = 0;
 
+
+  /****************************************************************************
+   *          Multiparticle (NEO) API -- design Phase-2 §1.3 / §1.7           *
+   *                                                                          *
+   *  Only `XCDeviceStackData` (and, for the task-local arrays,               *
+   *  `XCDeviceAoSData`) implement these.  They are *not* pure virtual on      *
+   *  purpose:                                                                *
+   *                                                                          *
+   *   * `XCDeviceStackData` is currently the only direct descendant of this   *
+   *     interface, so `= 0` would work today, but it would also force any     *
+   *     future non-stack `XCDeviceData` (an SoA or shell-batched variant) to  *
+   *     implement ten methods it can never support just to compile.           *
+   *   * A defaulted body that throws turns "this backend has no multiparticle *
+   *     support" into a clear runtime message at the single call site that    *
+   *     needs it instead of a link/compile error far from the cause.          *
+   *   * `nspecies()` / `active_species()` get *correct* single-species        *
+   *     defaults (1 / 0), so single-species callers are right by default and  *
+   *     `nspecies() == 1` inertness holds for every implementation.           *
+   ****************************************************************************/
+
+  /// Number of per-species context slots (1 == the legacy single-basis path)
+  virtual size_t nspecies() const { return 1ul; }
+
+  /// Index of the currently live species context
+  virtual size_t active_species() const { return 0ul; }
+
+  /// Reset all allocations and (re)create `np` per-species context slots
+  virtual void init_species( size_t np ) {
+    if( np == 1 ) return; // Single species is the default state
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: init_species NYI for this XCDeviceData");
+  }
+
+  /// Make species `p`'s context live (saving the currently live one first)
+  virtual void select_species( size_t p ) {
+    if( p == 0 ) return; // Selecting the only species is a no-op
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: select_species NYI for this XCDeviceData");
+  }
+
+  /// Carve per-species static EXC/VXC storage + the shared inter-pair storage
+  virtual void allocate_static_data_exc_vxc_multiparticle(
+    const multiparticle_tracker& ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: allocate_static_data NYI for this XCDeviceData");
+  }
+
+  /// Send species `p`'s density matrices + basis set to its context slot
+  virtual void send_static_data_density_basis_species( size_t,
+    const device_density_channels&, const BasisSet<double>& ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: send_static_data NYI for this XCDeviceData");
+  }
+
+  /// Zero every species' EXC/VXC accumulators + the inter-pair energies
+  virtual void zero_exc_vxc_integrands_multiparticle(
+    const multiparticle_tracker& ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: zero_exc_vxc NYI for this XCDeviceData");
+  }
+
+  /** Generate a task batch sized for ALL participating species at once.
+   *
+   *  @param[in] mp          resolved multiparticle descriptor
+   *  @param[in] basis_maps  one basis map per species (`nullptr` allowed for
+   *                         non-participating species)
+   *  @param[in] task_begin  start of the remaining task queue
+   *  @param[in] task_end    end of the task queue
+   *
+   *  @returns iterator to the first task which was *not* kept in the batch
+   */
+  virtual host_task_iterator generate_buffers_multiparticle(
+    const multiparticle_tracker&, const std::vector<const BasisSetMap*>&,
+    host_task_iterator task_begin, host_task_iterator ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: generate_buffers NYI for this XCDeviceData");
+    return task_begin; // unreachable; keeps every -Wreturn-type mode quiet
+  }
+
+  /** Retrieve multiparticle integrands.
+   *
+   *  @param[out] intra_EXC  per-species intra-species XC energy (nspecies)
+   *  @param[out] inter_EXC  per-pair EPC energy (mp.pairs.size())
+   *  @param[out] N_EL       per-species electron count (nspecies, diagnostic)
+   *  @param[out] vxc        per-species named VXC channels (nspecies)
+   */
+  virtual void retrieve_exc_vxc_integrands_multiparticle(
+    const multiparticle_tracker&, double*, double*, double*,
+    const std::vector<device_vxc_channels>& ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: retrieve_exc_vxc NYI for this XCDeviceData");
+  }
+
+  /// Populate every species' submatrix maps for the given task range
+  virtual void populate_submat_maps_multiparticle( const multiparticle_tracker&,
+    host_task_iterator, host_task_iterator,
+    const std::vector<const BasisSetMap*>& ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: populate_submat_maps NYI for this XCDeviceData");
+  }
+
+};
+
+
+/** RAII scoping of the live multiparticle species (design §1.3).
+ *
+ *  Selects `p` on construction and restores the previously live species on
+ *  destruction, *after* asserting that `p` is still the live species.  The
+ *  failure it exists to catch is unbalanced nesting -- a driver stage that
+ *  leaves a different species selected than the one it scoped, which silently
+ *  accumulates species q's Z matrix into species p's VXC.  That is exactly the
+ *  bug class the red-team electron/particle swap surfaced as a 9.6e-3 error in
+ *  the protonic VXC, and it is undetectable downstream.
+ *
+ *  The destructor is `noexcept(false)` and only throws when no exception is
+ *  already in flight, so a genuine error propagates unchanged while a silent
+ *  imbalance is still loud.
+ */
+class species_scope {
+
+  XCDeviceData* data_;
+  size_t        selected_;
+  size_t        previous_;
+  int           uncaught_at_entry_;
+
+public:
+
+  species_scope() = delete;
+  species_scope( const species_scope& ) = delete;
+  species_scope( species_scope&& ) = delete;
+  species_scope& operator=( const species_scope& ) = delete;
+  species_scope& operator=( species_scope&& ) = delete;
+
+  inline species_scope( XCDeviceData* data, size_t p ) :
+    data_(data), selected_(p),
+    previous_( data ? data->active_species() : 0ul ),
+    uncaught_at_entry_( std::uncaught_exceptions() ) {
+    if( not data_ ) GAUXC_GENERIC_EXCEPTION("species_scope: null XCDeviceData");
+    data_->select_species(p);
+  }
+
+  inline ~species_scope() noexcept(false) {
+    // True iff we are unwinding because of an exception thrown inside the scope
+    const bool unwinding = std::uncaught_exceptions() > uncaught_at_entry_;
+    bool unbalanced = false;
+    try {
+      unbalanced = data_->active_species() != selected_;
+      data_->select_species(previous_);
+    } catch(...) {
+      if( unwinding ) return; // never mask the original failure
+      throw;
+    }
+    if( unbalanced and not unwinding )
+      GAUXC_GENERIC_EXCEPTION("species_scope: unbalanced species selection");
+  }
+
+  inline size_t species() const { return selected_; }
 
 };
 

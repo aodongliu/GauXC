@@ -310,6 +310,178 @@ struct XCDeviceStackData : public XCDeviceData {
 
   base_stack_data base_stack;
 
+
+  /****************************************************************************
+   *   Multi-species (NEO / multiparticle) support -- design Phase-2 §1.3     *
+   *                                                                          *
+   *  A NEO XC evaluation must hold every quantum-particle species'            *
+   *  collocation and density for the SAME grid batch simultaneously, because  *
+   *  the EPC stage consumes [rho_e, rho_p] on the same points.  Instantiating *
+   *  one XCDeviceData per species is not an option: every XCDeviceStackData   *
+   *  claims `runtime_.device_memory()` in its entirety at construction, so    *
+   *  two instances would silently alias the same pool.  Instead one instance  *
+   *  carries one saved *context* per species and swaps the live members.      *
+   *                                                                          *
+   *  Per species: everything keyed on a basis set -- `global_dims`,           *
+   *  `allocated_terms`, `static_stack`, `base_stack`, and in the derived      *
+   *  classes the AoS stack, the device task array, the collocation shell      *
+   *  lists and the shell->task map.                                           *
+   *                                                                          *
+   *  Shared: the device pool itself (`dynmem_ptr`/`dynmem_sz`),               *
+   *  `total_npts_task_batch`, the grid point/weight arrays, and the           *
+   *  multiparticle scratch below.  The pool is carved exactly once,           *
+   *  sequentially, across all species -- never per-species sub-pools.         *
+   *                                                                          *
+   *  Grid arrays vs. task arrays.  Every per-point array (points, weights and *
+   *  every grid function evaluation: den, eps, vrho, ...) spans the WHOLE     *
+   *  task batch and is indexed by *global* point offset, so that two species' *
+   *  densities can be interleaved by a strided copy.  Points at which a       *
+   *  species is screened out read exactly 0.0 because `eval_vvars_*` zeroes   *
+   *  the whole batch array before its atomic-add reduction.  The task-local   *
+   *  (AoS) arrays and the `XCDeviceTask` array are instead *compact*: a task  *
+   *  where this species screens to nbe == 0 is never packed and never         *
+   *  reaches a launch.                                                        *
+   *                                                                          *
+   *  Every existing device kernel keeps reading `XCDeviceTask::bfn_screening` *
+   *  unchanged -- each species simply owns its own `device_tasks` array.      *
+   *                                                                          *
+   *  With `nspecies() == 1` the entire mechanism is inert: `mp_active_` is    *
+   *  false, `select_species(0)` returns immediately, `task_is_active()` is    *
+   *  unconditionally true and `host_bfn_screening()` returns the legacy       *
+   *  singular `XCTask::bfn_screening`.  Every single-species allocation,      *
+   *  packing and launch is byte-for-byte what it was.                         *
+   ****************************************************************************/
+
+  /// One saved per-species context
+  struct stack_species_state {
+    allocated_dims          global_dims;
+    integrator_term_tracker allocated_terms;
+    static_data             static_stack;
+    base_stack_data         base_stack;
+    bool                    alpha_only = false;
+  };
+
+  /// Static data shared by all species (NOT swapped by select_species)
+  struct multiparticle_static_data {
+    double* inter_exc_device = nullptr; ///< per inter-pair EPC energy (npairs)
+    double* acc_scr_device   = nullptr; ///< gdot accumulation scratch (1)
+    inline void reset() { std::memset(this,0,sizeof(multiparticle_static_data)); }
+  };
+
+  /// Dynamic (per task-batch) scratch shared by all species -- design §1.6
+  struct multiparticle_dyn_data {
+    double* rho_lhs_device       = nullptr; ///< total density, LHS species (npts)
+    double* rho_rhs_device       = nullptr; ///< total density, RHS species (npts)
+    double* pair_den_device      = nullptr; ///< [rho_lhs,rho_rhs] interleaved (2*npts)
+    double* pair_eps_device      = nullptr; ///< pair energy density (npts)
+    double* pair_vrho_device     = nullptr; ///< interleaved pair vrho (2*npts)
+    double* pair_vrho_lhs_device = nullptr; ///< de-interleaved LHS vrho (npts)
+    double* pair_vrho_rhs_device = nullptr; ///< de-interleaved RHS vrho (npts)
+    /// w*f accumulator for the grid-weight-derivative term of the
+    /// multiparticle EXC gradient.  Allocated in 2a, consumed in 2c: the
+    /// weight-derivative kernel runs ONCE per batch, over all species.
+    double* wtf_device           = nullptr; ///< (npts)
+    inline void reset() { std::memset(this,0,sizeof(multiparticle_dyn_data)); }
+  };
+
+  /// Doubles of shared multiparticle scratch required per grid point:
+  /// rho_lhs(1) + rho_rhs(1) + pair_den(2) + pair_eps(1) + pair_vrho(2)
+  /// + pair_vrho_lhs(1) + pair_vrho_rhs(1) + wtf(1)
+  static constexpr size_t mp_dyn_doubles_per_point = 10;
+  /// Number of separately aligned allocations in `multiparticle_dyn_data`
+  static constexpr size_t mp_dyn_nalloc = 8;
+
+  size_t nspecies_       = 1;     ///< Number of species contexts (1 == legacy)
+  size_t active_species_ = 0;     ///< Which context is currently live
+  size_t mp_ninter_      = 0;     ///< Number of inter-particle pairs allocated
+  bool   mp_active_      = false; ///< A multiparticle batch is being sized/packed
+  bool   mp_grid_owner_  = true;  ///< Live species owns the shared grid arrays
+  bool   active_alpha_only_ = false; ///< Live species is the alpha-only channel
+
+  std::vector<stack_species_state> stack_species_;
+  multiparticle_static_data        mp_static;
+  multiparticle_dyn_data           mp_dyn;
+
+  // Diagnostics for the last generate_buffers_multiparticle call.  These exist
+  // so the standalone allocation test (design risk R1) can check that the
+  // batch-size estimator and the carve agree without instrumenting the carve.
+  size_t mp_batch_static_req_ = 0; ///< bytes reserved for per-species statics
+  size_t mp_batch_est_bytes_  = 0; ///< bytes the batch loop subtracted
+  size_t mp_batch_dyn_used_   = 0; ///< bytes actually carved for the batch
+  size_t mp_batch_ntasks_     = 0; ///< tasks kept in the batch
+
+  size_t nspecies() const override final { return nspecies_; }
+  size_t active_species() const override final { return active_species_; }
+
+  /// True iff the live species is the alpha-only proton channel (§1.5).  Its
+  /// storage is RKS-shaped (one dmat, one VXC, no den_z) but the stock UKS
+  /// Z-matrix kernel still reads `vrho_pos` / `vrho_neg`, so those two grid
+  /// arrays are allocated on top of the RKS shape.  Never true outside a
+  /// multiparticle batch, so the single-species path cannot see it.
+  inline bool alpha_only_vrho() const {
+    return mp_active_ and active_alpha_only_;
+  }
+
+  /** Screening block of `task` for the currently selected species.
+   *
+   *  For a single-basis task (`bfn_screenings` empty) and species 0 this
+   *  returns the legacy singular `bfn_screening`, identical to the code it
+   *  replaces.  Unlike `XCTask::basis_screening(size_t)`'s non-const overload
+   *  it never *materializes* `bfn_screenings`, which would silently change
+   *  `XCTask::equiv_with` semantics for the shell-batched driver.
+   */
+  const XCTask::screening_data& host_bfn_screening( const XCTask& t ) const;
+  XCTask::screening_data& host_bfn_screening( XCTask& t ) const;
+
+  /** Does the live species contribute any task-local work to `task`?
+   *
+   *  Outside a multiparticle batch this is unconditionally true, which is what
+   *  keeps every single-species sizing/packing loop byte-identical.  Inside
+   *  one it is the compaction predicate: the multi-basis load balancer keeps a
+   *  task when *any* species screens in, so a species may legitimately see
+   *  nbe == 0 (and hence no submatrix map at all) on a kept task.
+   */
+  inline bool task_is_active( const XCTask& t ) const {
+    if( not mp_active_ ) return true;
+    return host_bfn_screening(t).nbe > 0;
+  }
+
+  /// Access a (possibly non-live) species' context.  Mirrors the live members
+  /// into the slot first when `p` is active, so callers always see current
+  /// pointers.
+  const stack_species_state& species_state( size_t p );
+
+  // Multiparticle API (see XCDeviceData for the contracts)
+  void init_species( size_t np ) override final;
+  void select_species( size_t p ) override final;
+  void allocate_static_data_exc_vxc_multiparticle(
+    const multiparticle_tracker& mp ) override final;
+  void send_static_data_density_basis_species( size_t p,
+    const device_density_channels& den,
+    const BasisSet<double>& basis ) override final;
+  void zero_exc_vxc_integrands_multiparticle(
+    const multiparticle_tracker& mp ) override final;
+  host_task_iterator generate_buffers_multiparticle(
+    const multiparticle_tracker& mp,
+    const std::vector<const BasisSetMap*>& basis_maps,
+    host_task_iterator task_begin, host_task_iterator task_end ) override final;
+  void retrieve_exc_vxc_integrands_multiparticle(
+    const multiparticle_tracker& mp, double* intra_EXC, double* inter_EXC,
+    double* N_EL, const std::vector<device_vxc_channels>& vxc ) override final;
+  void populate_submat_maps_multiparticle( const multiparticle_tracker& mp,
+    host_task_iterator task_begin, host_task_iterator task_end,
+    const std::vector<const BasisSetMap*>& basis_maps ) override final;
+
+protected:
+
+  /// Save the live state into slot `p` / load slot `p` into the live state.
+  /// Derived classes override to handle their own members (calling the base).
+  virtual void store_species_state( size_t p );
+  virtual void load_species_state( size_t p );
+  virtual void resize_species_slots( size_t np );
+
+public:
+
   /// Device backend instance to handle device specific execution
   const DeviceRuntimeEnvironment& runtime_;
   DeviceBackend* device_backend_ = nullptr;

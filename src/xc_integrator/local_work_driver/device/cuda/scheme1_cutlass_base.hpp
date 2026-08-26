@@ -32,6 +32,17 @@ struct AoSScheme1CUTLASSBase : public AoSScheme1Base {
   void inc_vxc( XCDeviceData*, density_id, bool ) override final;
   void inc_fxc( XCDeviceData*, density_id, bool ) override final;
 
+  /** Multiparticle (NEO) opt-out -- design §1.2's backend-opt-out precedent.
+   *
+   *  `AoSScheme1CUTLASSBase::Data` sizes its per-task pointer/dimension arrays
+   *  on the FULL task range and then packs them from `host_device_tasks`,
+   *  which under a multiparticle batch is compact (WP2A2 §7.1): the tail of
+   *  every grouped-GEMM argument array would be garbage.  Making those two
+   *  files species-aware is a separate, independently verifiable change, so
+   *  this backend rejects the multiparticle path outright for now.
+   */
+  bool supports_multiparticle() const override final { return false; }
+
   struct Data;
 
   virtual ~AoSScheme1CUTLASSBase() = default;

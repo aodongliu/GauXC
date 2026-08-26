@@ -27,6 +27,8 @@ public:
   static constexpr bool is_device = true;
   using value_type = typename base_type::value_type;
   using basis_type = typename base_type::basis_type;
+  using multiparticle_density = typename base_type::multiparticle_density;
+  using multiparticle_vxc     = typename base_type::multiparticle_vxc;
 
   using host_task_container = std::vector<XCTask>;
   using host_task_iterator  = typename host_task_container::iterator;
@@ -72,6 +74,16 @@ protected:
                       value_type* VXCy, int64_t ldvxcy,
                       value_type* VXCx, int64_t ldvxcx,
                       value_type* EXC, const IntegratorSettingsXC& settings ) override;
+
+  /// MultiParticle (NEO) EXC/VXC -- design Phase-2 §1.4.  The gradient
+  /// counterpart deliberately keeps the base class' NYI throw (design §1.9).
+  void eval_exc_vxc_( const std::vector<multiparticle_density>& densities,
+                      const MultiParticleFunctionalSpec& functional_spec,
+                      const MultiParticleXCTerms& terms,
+                      std::vector<multiparticle_vxc>& vxc,
+                      value_type* intra_exc,
+                      value_type* inter_pair_exc,
+                      const IntegratorSettingsXC& ks_settings ) override;
 
 
   void eval_exc_grad_( int64_t m, int64_t n, const value_type* P, int64_t ldp, 
@@ -126,6 +138,19 @@ protected:
                             value_type* VXCz, int64_t ldvxcz,
                             value_type* VXCy, int64_t ldvxcy,
                             value_type* VXCx, int64_t ldvxcx, value_type* EXC, value_type *N_EL,
+                            host_task_iterator task_begin, host_task_iterator task_end,
+                            XCDeviceData& device_data );
+
+  /// MultiParticle (NEO) local work: descriptor resolution, the species-serial
+  /// batch loop (design §1.4) and device-to-host retrieval (design §1.7).
+  void multiparticle_exc_vxc_local_work_(
+                            const std::vector<multiparticle_density>& densities,
+                            const MultiParticleFunctionalSpec& functional_spec,
+                            const MultiParticleXCTerms& terms,
+                            std::vector<multiparticle_vxc>& vxc,
+                            value_type* intra_exc,
+                            value_type* inter_pair_exc,
+                            const IntegratorSettingsXC& settings,
                             host_task_iterator task_begin, host_task_iterator task_end,
                             XCDeviceData& device_data );
 

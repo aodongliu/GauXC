@@ -1475,6 +1475,172 @@ void AoSScheme1Base::eval_kern_exc_vxc_mgga( const functional_type& func,
 }
 
 
+/******************************************************************************
+ *   Multiparticle (NEO) inter-species (EPC) kernel -- design Phase-2 §1.6    *
+ *                                                                            *
+ *  Pack -> evaluate -> de-interleave -> weight -> scatter, entirely out of    *
+ *  primitives that already exist (`copy_async`, `copy_async_2d`, `increment`, *
+ *  `hadamard_product`, `gdot`, `GauXC::eval_kern_exc_vxc_lda`).  No new       *
+ *  backend kernel and, critically, NO host synchronization: every operation   *
+ *  below is issued on the master queue (`copy_async*` and                     *
+ *  `set_zero_async_master_queue` use the master stream directly;              *
+ *  `master_blas_handle()` is bound to that same stream at backend             *
+ *  construction), so the whole stage is one ordered stream segment.           *
+ *                                                                            *
+ *  Every per-point array spans the WHOLE task batch and is indexed by global  *
+ *  point offset, which is what makes the two species' densities interleavable *
+ *  with a strided 2-D copy even though their task lists are compact.  Points  *
+ *  where a species is screened out read exactly 0.0 (`eval_vvars_*` zeroes    *
+ *  the whole batch array before its atomic-add reduction).                    *
+ ******************************************************************************/
+
+namespace {
+
+/// Which of a species' base_stack arrays carries its total density on the grid.
+///  * RKS                      : den_s is rho_total
+///  * UKS (genuine two-channel): den_s is rho_alpha, den_z is rho_beta
+///  * alpha-only (§1.5)        : RKS-shaped storage, uvars skipped, so den_s is
+///                               already rho_total and there is no den_z
+inline bool mp_species_two_channel( const multiparticle_species_desc& s ) {
+  return s.scheme == UKS and not s.alpha_only;
+}
+
+} // anonymous namespace
+
+
+void AoSScheme1Base::eval_kern_exc_vxc_inter_lda( const functional_type& func,
+  XCDeviceData* _data, const multiparticle_tracker& mp, size_t ipair ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+
+  if( !func.is_lda() )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle inter-species XC kernel must be LDA!");
+
+  const auto& pair = mp.pairs.at(ipair);
+  const auto& se   = mp.species.at(pair.electron);
+  const auto& sp   = mp.species.at(pair.particle);
+
+  // The alpha-only specialization is only exact on the *particle* side of a
+  // pair (§1.5 step 3: EPC touches the + channel only).  The driver's
+  // eligibility predicate excludes any species that is the electron of an
+  // active pair; this is the belt-and-braces check for that invariant.
+  if( se.alpha_only )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: alpha-only species cannot be an EPC electron");
+
+  auto* backend = data->device_backend_;
+  auto  handle  = backend->master_blas_handle();
+  const size_t npts = data->total_npts_task_batch;
+
+  const auto& e_stack = data->species_state(pair.electron).base_stack;
+  const auto& p_stack = data->species_state(pair.particle).base_stack;
+  auto& dyn = data->mp_dyn;
+
+  const bool e_two_channel = mp_species_two_channel(se);
+  const bool p_two_channel = mp_species_two_channel(sp);
+
+  // Every species aliases the one packed copy of the immutable grid, so either
+  // species' weights pointer is the shared array.
+  const double* weights = e_stack.weights_device;
+  if( not weights )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: EPC stage has no grid weights");
+
+  // ---- 1. Total densities per species (host oracle's `rho_total`)
+  backend->copy_async( npts, e_stack.den_s_eval_device, dyn.rho_lhs_device,
+    "MP EPC rho_lhs" );
+  if( e_two_channel )
+    increment( handle, e_stack.den_z_eval_device, dyn.rho_lhs_device, (int)npts );
+
+  backend->copy_async( npts, p_stack.den_s_eval_device, dyn.rho_rhs_device,
+    "MP EPC rho_rhs" );
+  if( p_two_channel )
+    increment( handle, p_stack.den_z_eval_device, dyn.rho_rhs_device, (int)npts );
+
+  // ---- 2. Interleave into the polarized ABI ExchCXX expects: the EPC kernels
+  //         receive the total electron density as spin-up and the total
+  //         quantum-particle density as spin-down.
+  interleave_kernel_input( npts, dyn.rho_lhs_device, 1, dyn.pair_den_device + 0,
+    2, "MP EPC rho_e -> pair_den", backend );
+  interleave_kernel_input( npts, dyn.rho_rhs_device, 1, dyn.pair_den_device + 1,
+    2, "MP EPC rho_p -> pair_den", backend );
+
+  // ---- 3. Evaluate
+  GauXC::eval_kern_exc_vxc_lda( func, npts, dyn.pair_den_device,
+    dyn.pair_eps_device, dyn.pair_vrho_device, backend->queue() );
+
+  // ---- 4. De-interleave and factor the quadrature weights in.  The intra
+  //         stage has already weighted its own vrho (`scale_lda_output`), so
+  //         the EPC contribution must be weighted before it is accumulated.
+  interleave_kernel_input( npts, dyn.pair_vrho_device + 0, 2,
+    dyn.pair_vrho_lhs_device, 1, "MP EPC pair_vrho -> lhs", backend );
+  interleave_kernel_input( npts, dyn.pair_vrho_device + 1, 2,
+    dyn.pair_vrho_rhs_device, 1, "MP EPC pair_vrho -> rhs", backend );
+
+  hadamard_product( handle, (int)npts, 1, weights, 1, dyn.pair_eps_device, 1 );
+  hadamard_product( handle, (int)npts, 1, weights, 1, dyn.pair_vrho_lhs_device, 1 );
+  hadamard_product( handle, (int)npts, 1, weights, 1, dyn.pair_vrho_rhs_device, 1 );
+
+  // ---- 5. Scatter into each species' potential channel.  The NEO convention
+  //         is asymmetric: the electron receives the derivative in BOTH spin
+  //         channels when it is polarized, the quantum particle only in the
+  //         + channel.
+  if( mp.do_vxc and se.build_vxc ) {
+    if( e_two_channel ) {
+      increment( handle, dyn.pair_vrho_lhs_device, e_stack.vrho_pos_eval_device,
+        (int)npts );
+      increment( handle, dyn.pair_vrho_lhs_device, e_stack.vrho_neg_eval_device,
+        (int)npts );
+    } else {
+      increment( handle, dyn.pair_vrho_lhs_device, e_stack.vrho_eval_device,
+        (int)npts );
+    }
+  }
+
+  if( mp.do_vxc and sp.build_vxc ) {
+    if( p_two_channel or sp.alpha_only ) {
+      increment( handle, dyn.pair_vrho_rhs_device, p_stack.vrho_pos_eval_device,
+        (int)npts );
+    } else {
+      increment( handle, dyn.pair_vrho_rhs_device, p_stack.vrho_eval_device,
+        (int)npts );
+    }
+  }
+
+  backend->check_error("exc_vxc inter lda" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
+void AoSScheme1Base::inc_inter_exc( XCDeviceData* _data,
+  const multiparticle_tracker& mp, size_t ipair ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+  if( ipair >= mp.pairs.size() )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: inter pair index out of range");
+  if( not data->mp_static.inter_exc_device )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: inter EXC accumulator not allocated");
+
+  auto  handle = data->device_backend_->master_blas_handle();
+  const size_t npts = data->total_npts_task_batch;
+  auto& dyn = data->mp_dyn;
+
+  // Keep the GauXC NEO EPC convention: integrate the ExchCXX energy density
+  // over BOTH packed densities, i.e. sum_i w_i eps_i (rho_e,i + rho_p,i).
+  // pair_eps already carries the quadrature weight (step 4 above).
+  double* res = data->mp_static.inter_exc_device + ipair;
+  gdot( handle, (int)npts, dyn.pair_eps_device, 1, dyn.rho_lhs_device, 1,
+    data->mp_static.acc_scr_device, res );
+  gdot( handle, (int)npts, dyn.pair_eps_device, 1, dyn.rho_rhs_device, 1,
+    data->mp_static.acc_scr_device, res );
+
+  data->device_backend_->check_error("inc inter exc" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
 void AoSScheme1Base::eval_kern_vxc_fxc_lda( const functional_type& func, 
   XCDeviceData* _data ) {
 

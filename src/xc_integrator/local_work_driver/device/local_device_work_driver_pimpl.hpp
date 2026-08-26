@@ -93,6 +93,36 @@ struct LocalDeviceWorkDriverPIMPL {
 
   virtual std::unique_ptr<XCDeviceData> create_device_data(const DeviceRuntimeEnvironment&) = 0;
 
+  /****************************************************************************
+   *      Multiparticle (NEO) inter-species API -- design Phase-2 §1.6        *
+   *                                                                          *
+   *  These are the ONLY two entries the multiparticle driver adds; every      *
+   *  other stage of the species-serial loop reuses the single-species entries *
+   *  above verbatim through the per-species context slots.                    *
+   *                                                                          *
+   *  They are deliberately not pure virtual.  A backend whose data layer is   *
+   *  not multiparticle-aware (MAGMA / CUTLASS -- see WP2A2 §7.1) opts out by  *
+   *  returning false from `supports_multiparticle()`, which the driver checks *
+   *  once before any allocation, so these bodies are unreachable there.  The  *
+   *  throwing defaults exist so a future backend fails loudly rather than     *
+   *  silently doing nothing.                                                  *
+   ****************************************************************************/
+
+  /// Can this work driver (and its XCDeviceData) run the multiparticle path?
+  virtual bool supports_multiparticle() const { return true; }
+
+  /// EPC pack / evaluate / de-interleave / weight / scatter for one pair
+  virtual void eval_kern_exc_vxc_inter_lda( const functional_type&, XCDeviceData*,
+    const multiparticle_tracker&, size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle inter-species XC is NYI for this LWD");
+  }
+
+  /// Accumulate one pair's inter-species EXC into its device accumulator
+  virtual void inc_inter_exc( XCDeviceData*, const multiparticle_tracker&,
+    size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle inter-species EXC is NYI for this LWD");
+  }
+
 };
 
 }

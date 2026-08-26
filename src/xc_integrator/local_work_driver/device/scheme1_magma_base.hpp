@@ -21,6 +21,17 @@ struct AoSScheme1MAGMABase : public AoSScheme1Base {
   void inc_vxc( XCDeviceData*, density_id den, bool ) override final;
   void inc_exx_k( XCDeviceData* ) override final;
 
+  /** Multiparticle (NEO) opt-out -- design §1.2's backend-opt-out precedent.
+   *
+   *  `AoSScheme1MAGMABase::Data` sizes its per-task pointer/dimension arrays on
+   *  the FULL task range and then packs them from `host_device_tasks`, which
+   *  under a multiparticle batch is compact (WP2A2 §7.1).  Memory accounting
+   *  stays sound, but the tail of every grouped-BLAS array would be garbage.
+   *  Rather than carry an unverifiable port (MAGMA is not built or testable in
+   *  this environment), this backend rejects the multiparticle path outright.
+   */
+  bool supports_multiparticle() const override final { return false; }
+
   struct Data;
 
   virtual ~AoSScheme1MAGMABase() = default;

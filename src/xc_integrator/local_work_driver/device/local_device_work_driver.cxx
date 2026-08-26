@@ -212,4 +212,23 @@ void LocalDeviceWorkDriver::eval_weight_1st_deriv_contracted( XCDeviceData* devi
   pimpl_->eval_weight_1st_deriv_contracted(device_data, alg);
 }
 
+// Multiparticle (NEO) inter-species API -- design Phase-2 §1.6
+
+bool LocalDeviceWorkDriver::supports_multiparticle() const {
+  throw_if_invalid_pimpl(pimpl_);
+  return pimpl_->supports_multiparticle();
+}
+
+void LocalDeviceWorkDriver::eval_kern_exc_vxc_inter_lda( const functional_type& func,
+  XCDeviceData* device_data, const multiparticle_tracker& mp, size_t ipair ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->eval_kern_exc_vxc_inter_lda(func, device_data, mp, ipair);
+}
+
+void LocalDeviceWorkDriver::inc_inter_exc( XCDeviceData* device_data,
+  const multiparticle_tracker& mp, size_t ipair ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->inc_inter_exc(device_data, mp, ipair);
+}
+
 }

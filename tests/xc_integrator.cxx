@@ -21,6 +21,8 @@
 #include <highfive/H5File.hpp>
 #include <Eigen/Core>
 
+#include <cstring>
+
 using namespace GauXC;
 
 
@@ -411,6 +413,21 @@ std::string neo_dset( std::string base, size_t i ) {
   return base + std::to_string(i);
 }
 
+// Bit-for-bit equality of two dense matrices -- deliberately a memcmp and NOT
+// a norm comparison. It backs the alpha-only device contract: a quantum
+// particle whose density satisfies Ps == Pz bitwise and which carries no intra
+// functional is assembled on the device through ONE VXC accumulator that is
+// mirrored into both output channels, so the two returned matrices must agree
+// to the last bit. The two-channel route would only reach that by accident --
+// its two SYR2K accumulations are dispatched round-robin over a pool of BLAS
+// streams and scattered with atomicAdd, so its summation order is not fixed.
+bool neo_bitwise_equal( const Eigen::MatrixXd& A, const Eigen::MatrixXd& B ) {
+  if( A.rows() != B.rows() or A.cols() != B.cols() ) return false;
+  if( A.size() == 0 ) return true;
+  return std::memcmp( A.data(), B.data(),
+                      size_t(A.size()) * sizeof(double) ) == 0;
+}
+
 void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
   std::string reference_file,
   functional_type& func,      // electronic (intra) functional
@@ -609,6 +626,22 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     CHECK( (prot_Ps[i] - prot_Pz[i]).norm() / prot_basis[i].nbf() < 1e-12 );
   }
 
+  // ...and the device exploits exactly that. Every protonic species in these
+  // references is high-spin (Ps == Pz bitwise) and carries no intra functional,
+  // so the device takes its alpha-only channel: one X matrix, one density, one
+  // Z matrix, one VXC accumulator, mirrored into both output channels. The two
+  // returned matrices must therefore be identical BIT FOR BIT, not merely
+  // close -- see neo_bitwise_equal above for why that is a real contract and
+  // not a restatement of the norm checks. Device-only: the host oracle reaches
+  // the same equality by the two-channel route, so pinning it there would be a
+  // different (and much weaker) statement.
+  if( ex == ExecutionSpace::Device ) {
+    for( size_t i = 0; i < nprot; ++i ) {
+      INFO( "protonic species " << i << " (alpha-only channel)" );
+      CHECK( neo_bitwise_equal( result.VXCs[i+1], result.VXCz[i+1] ) );
+    }
+  }
+
   // Check if the integrator propagates state correctly. This matters more than
   // in the single-species case: the multiparticle local work re-sorts the load
   // balancer's task vector in place on every call.
@@ -741,8 +774,26 @@ void test_neo_integrator(std::string reference_file, functional_type& func,
     }
 #endif
 
-  // The device multiparticle path is not implemented; its contract is asserted
-  // once, on a synthetic system, in "NEO XC Integrator / NYI + Validation".
+#ifdef GAUXC_HAS_DEVICE
+  SECTION( "Device" ) {
+    // check_grad = false: the device multiparticle EXC gradient is not
+    // implemented (it is deferred to Phase-2 stage 2c) and its NYI contract is
+    // asserted in "NEO XC Integrator / NYI + Validation" below. The Host
+    // section above keeps the gradient checks. Everything else -- energies,
+    // per-species/per-channel VXC, symmetry, repeat call, VXC-target subsets,
+    // the EXC-only path, the terms-less overload and species-permutation
+    // invariance -- runs on the device at the host-calibrated tolerances.
+    //
+    // Only the Incore integrator is exercised: ShellBatched derives from
+    // ReplicatedXCDeviceIntegrator rather than from the Incore integrator and
+    // MAGMA/CUTLASS local work drivers opt out of the multiparticle path, all
+    // three by an explicit NYI throw.
+    SECTION( "Incore - MPI Reduction" ) {
+      test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
+        epc_func, pruning_scheme, false );
+    }
+  }
+#endif
 }
 
 /**
@@ -1100,8 +1151,10 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
     }
 
 #ifdef GAUXC_HAS_DEVICE
-    // The remaining seams a device multiparticle implementation has to remove.
-    // When they are removed these checks fail, in the change that removes them.
+    // The device multiparticle path. The LoadBalancer seam (WP2a-1) and the
+    // EXC/VXC seam (WP2a-3) are both closed and are asserted positively below;
+    // the EXC gradient seam is still open by design (Phase-2 stage 2c) and is
+    // still asserted as a throw.
     {
       // WP2a-1: the device LoadBalancer supports multiple basis sets. It must
       // construct, produce tasks, and carry one screening record per basis in
@@ -1122,8 +1175,74 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
       XCIntegratorFactory<matrix_type> dev_factory( ExecutionSpace::Device,
         "Replicated", "Default", "Default", "Default" );
       auto dev_integrator = dev_factory.get_instance( func, lb );
-      CHECK_THROWS_WITH( dev_integrator.eval_exc_vxc( densities, spec ),
-        Catch::Contains("MultiParticle EXC/VXC is not implemented") );
+
+      // WP2a-3: device MultiParticle EXC/VXC. The reference-driven device
+      // sections in test_neo_integrator carry the numerical burden; here the
+      // point is the contract -- the call returns instead of throwing, its
+      // result has the multiparticle shape, and it agrees with the host oracle
+      // that ran a few lines above on exactly the same inputs.
+      auto mp_approx = []( double x ) {
+        return Approx(x).epsilon(1e-10).margin(1e-14);
+      };
+      const auto e_nbf = sys.bases[0].nbf();
+      const auto p_nbf = sys.bases[1].nbf();
+
+      auto dev_result = dev_integrator.eval_exc_vxc( densities, spec );
+      REQUIRE( dev_result.intra_exc.size()      == 2 );
+      REQUIRE( dev_result.inter_pair_exc.size() == 1 );
+      CHECK( dev_result.VXCs[0].rows() == e_nbf );
+      CHECK( dev_result.VXCs[1].rows() == p_nbf );
+      CHECK( dev_result.intra_exc[0]      == mp_approx(result.intra_exc[0]) );
+      CHECK( dev_result.intra_exc[1]      == mp_approx(result.intra_exc[1]) );
+      CHECK( dev_result.inter_pair_exc[0] == mp_approx(result.inter_pair_exc[0]) );
+      CHECK( dev_result.inter_exc         == mp_approx(result.inter_exc) );
+      CHECK( (dev_result.VXCs[0] - result.VXCs[0]).norm() / e_nbf < 1e-10 );
+      CHECK( (dev_result.VXCs[1] - result.VXCs[1]).norm() / p_nbf < 1e-10 );
+
+      // sys.Ps == sys.Pz bitwise and species 1 has no intra functional, so the
+      // particle takes the device alpha-only channel and its two output
+      // channels must be bit-for-bit identical.
+      CHECK( dev_result.VXCz[1].size() == dev_result.VXCs[1].size() );
+      CHECK( neo_bitwise_equal( dev_result.VXCs[1], dev_result.VXCz[1] ) );
+
+      // ...and the two-channel fallback, forced. Alpha-only eligibility is a
+      // bitwise memcmp of Ps against Pz, so Pz = 0.5*Ps makes the particle
+      // ineligible and the full two-channel UKS assembly runs instead: a second
+      // dmat, a den_z grid array, the UKS uvars stage, a DEN_Z Z matrix, a
+      // second VXC accumulator, a second symmetrize and a second D2H. It must
+      // still agree with the host oracle on the same inputs, and with the
+      // alpha-only route it replaced.
+      //
+      // Note what is deliberately NOT asserted here. With the asymmetric NEO
+      // scatter (a quantum particle receives the EPC potential in its + channel
+      // only) and no intra functional on that species, Zs and Zz are equal for
+      // ANY Pz, and the particle's total density rho_a + rho_b = rho_s is
+      // likewise independent of Pz. A "VXCs must now differ from VXCz"
+      // assertion would therefore be pinning floating-point noise from the
+      // round-robin SYR2K accumulation, not the route. The route is pinned by
+      // the eligibility predicate itself; what is testable is that the code
+      // path it selects is correct, which is what follows.
+      {
+        Eigen::MatrixXd Pz_tc = 0.5 * sys.Pz;
+        std::vector<mp_density_type> tc_dens = {
+          mp_density_type{ &sys.P,  nullptr },
+          mp_density_type{ &sys.Ps, &Pz_tc  } };
+
+        auto host_tc = integrator.eval_exc_vxc( tc_dens, spec );
+        auto dev_tc  = dev_integrator.eval_exc_vxc( tc_dens, spec );
+
+        CHECK( dev_tc.intra_exc[0]      == mp_approx(host_tc.intra_exc[0]) );
+        CHECK( dev_tc.intra_exc[1]      == mp_approx(host_tc.intra_exc[1]) );
+        CHECK( dev_tc.inter_pair_exc[0] == mp_approx(host_tc.inter_pair_exc[0]) );
+        CHECK( (dev_tc.VXCs[0] - host_tc.VXCs[0]).norm() / e_nbf < 1e-10 );
+        CHECK( (dev_tc.VXCs[1] - host_tc.VXCs[1]).norm() / p_nbf < 1e-10 );
+        CHECK( (dev_tc.VXCz[1] - host_tc.VXCz[1]).norm() / p_nbf < 1e-10 );
+
+        // The specialization reproduces the general route it specializes.
+        CHECK( (dev_tc.VXCs[1] - dev_result.VXCs[1]).norm() / p_nbf < 1e-10 );
+      }
+
+      // Still open by design: the device multiparticle EXC gradient.
       CHECK_THROWS_WITH( dev_integrator.eval_exc_grad( densities, spec ),
         Catch::Contains("MultiParticle EXC Gradient is not implemented") );
     }

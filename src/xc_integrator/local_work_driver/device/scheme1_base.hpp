@@ -73,7 +73,15 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
 
   void save_xmat( XCDeviceData*, bool do_grad, density_id den ) override final;
 
-  
+  // Multiparticle (NEO) inter-species API -- design Phase-2 §1.6.  Not `final`:
+  // AoSScheme1MAGMABase / AoSScheme1CUTLASSBase opt out of the multiparticle
+  // path entirely (see their supports_multiparticle overrides).
+  void eval_kern_exc_vxc_inter_lda( const functional_type&, XCDeviceData*,
+    const multiparticle_tracker&, size_t ) override;
+  void inc_inter_exc( XCDeviceData*, const multiparticle_tracker&,
+    size_t ) override;
+
+
   // Overridable APIs
   template<bool is_trial>
   void eval_xmat_impl(double fac, XCDeviceData*, bool do_grad, density_id );

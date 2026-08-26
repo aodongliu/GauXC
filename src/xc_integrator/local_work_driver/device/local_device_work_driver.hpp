@@ -126,6 +126,12 @@ public:
 
   std::unique_ptr<XCDeviceData> create_device_data(const DeviceRuntimeEnvironment&);
 
+  // Multiparticle (NEO) inter-species API -- design Phase-2 §1.6
+  bool supports_multiparticle() const;
+  void eval_kern_exc_vxc_inter_lda( const functional_type&, XCDeviceData*,
+    const multiparticle_tracker&, size_t ipair );
+  void inc_inter_exc( XCDeviceData*, const multiparticle_tracker&, size_t ipair );
+
 private: 
 
   pimpl_type pimpl_; ///< Implementation

@@ -22,6 +22,28 @@ void AoSScheme1CUTLASSBase::Data::reset_allocations() {
   problem_sizes_host.clear();
 }
 
+void AoSScheme1CUTLASSBase::Data::store_species_state( size_t p ) {
+  base_type::store_species_state(p);
+  auto& s = cutlass_species_.at(p);
+  s.cutlass_stack      = cutlass_stack;
+  s.syr2k_sizes_host   = syr2k_sizes_host;
+  s.problem_sizes_host = problem_sizes_host;
+}
+
+void AoSScheme1CUTLASSBase::Data::load_species_state( size_t p ) {
+  base_type::load_species_state(p);
+  const auto& s = cutlass_species_.at(p);
+  cutlass_stack      = s.cutlass_stack;
+  syr2k_sizes_host   = s.syr2k_sizes_host;
+  problem_sizes_host = s.problem_sizes_host;
+}
+
+void AoSScheme1CUTLASSBase::Data::resize_species_slots( size_t np ) {
+  base_type::resize_species_slots(np);
+  cutlass_species_.clear();
+  cutlass_species_.resize(np);
+}
+
 size_t AoSScheme1CUTLASSBase::Data::get_static_mem_requirement() {
   return base_type::get_static_mem_requirement() + 
          4 * sizeof(int32_t) +
@@ -36,6 +58,13 @@ size_t AoSScheme1CUTLASSBase::Data::get_mem_req( integrator_term_tracker terms,
   auto is_gks = terms.ks_scheme == GKS;
   
   size_t base_size = base_type::get_mem_req(terms, task);
+
+  // Compact per-species task list: a task this species screens out of gets no
+  // task-local storage from the base, hence no grouped-BLAS argument slot
+  // either.  This MUST agree with allocate_dynamic_stack's count below or the
+  // multiparticle batch-size estimate and the carve disagree (design R1).
+  // Unconditionally true for a single species, so the legacy sizing is exact.
+  if( not task_is_active(task) ) return base_size;
 
   // TODO: There is probably a better way to check this
   required_term_storage reqt(terms);
@@ -90,7 +119,13 @@ AoSScheme1CUTLASSBase::Data::device_buffer_t
   auto [ ptr, sz ] = buf;
   buffer_adaptor mem( ptr, sz );
 
-  const auto ntask = std::distance( task_begin, task_end );
+  // The COMPACT per-species task count -- exactly the length `pack_and_send`
+  // fills and exactly the `problem_count` the grouped-BLAS entry points are
+  // handed.  Identical to std::distance(task_begin,task_end) for one species.
+  std::ptrdiff_t ntask = 0;
+  for( auto it = task_begin; it != task_end; ++it )
+    if( task_is_active(*it) ) ntask++;
+
   cutlass_stack.dmat_s_array_device = mem.aligned_alloc<double*>( ntask, csl );
   cutlass_stack.vmat_array_device   = mem.aligned_alloc<double*>( ntask, csl );
   cutlass_stack.zmat_array_device   = mem.aligned_alloc<double*>( ntask, csl );
@@ -147,7 +182,12 @@ void AoSScheme1CUTLASSBase::Data::pack_and_send(
   auto is_uks = terms.ks_scheme == UKS;
   auto is_gks = terms.ks_scheme == GKS;
 
-  const auto ntask = std::distance( task_begin, task_end );
+  // The COMPACT per-species task list.  `host_device_tasks` was just (re)built
+  // by the base implementation above and holds one entry per task this species
+  // is active on -- which is precisely what `eval_xmat` / `inc_vxc` pass to
+  // cutlass_gemm / cutlass_syr2k as `problem_count`.  Kept signed so the loop
+  // counters below are unchanged.
+  const auto ntask = static_cast<std::ptrdiff_t>( host_device_tasks.size() );
   std::vector<double*> dmat_host( ntask ), zmat_host( ntask ), bf_host( ntask ),
                        vmat_host( ntask ), tdmat_host( ntask );
   problem_sizes_host.resize(ntask);

@@ -433,7 +433,8 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
   functional_type& func,      // electronic (intra) functional
   functional_type& epc_func,  // electron/particle (inter, EPC) functional
   PruningScheme pruning_scheme,
-  bool check_grad ) {
+  bool check_grad,
+  std::string lwd_kernel = "Default" ) {
 
   using matrix_type = Eigen::MatrixXd;
   Molecule mol;
@@ -561,7 +562,7 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
 
   // Construct XCIntegrator
   XCIntegratorFactory<matrix_type> integrator_factory( ex, "Replicated",
-    "Default", "Default", "Default" );
+    "Default", lwd_kernel, "Default" );
   auto integrator = integrator_factory.get_instance( func, lb );
 
   std::vector<mp_density_type> densities;
@@ -785,13 +786,26 @@ void test_neo_integrator(std::string reference_file, functional_type& func,
     // invariance -- runs on the device at the host-calibrated tolerances.
     //
     // Only the Incore integrator is exercised: ShellBatched derives from
-    // ReplicatedXCDeviceIntegrator rather than from the Incore integrator and
-    // MAGMA/CUTLASS local work drivers opt out of the multiparticle path, all
-    // three by an explicit NYI throw.
+    // ReplicatedXCDeviceIntegrator rather than from the Incore integrator, and
+    // the MAGMA local work driver opts out of the multiparticle path, both by
+    // an explicit NYI throw.
     SECTION( "Incore - MPI Reduction" ) {
       test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
         epc_func, pruning_scheme, false );
     }
+
+    #ifdef GAUXC_HAS_CUTLASS
+    // The CUTLASS local work driver replaces the per-task cuBLAS SYR2K/GEMM
+    // launches with one grouped Rank2K / grouped GEMM per species per channel
+    // (WP2b-A).  Its Data class carries its grouped-BLAS argument arrays in
+    // the same per-species slots the rest of the device data layer uses, and
+    // sizes/packs them from the compact per-species task list, so it must
+    // reproduce the default backend's numbers at the same tolerances.
+    SECTION( "Incore - MPI Reduction - CUTLASS" ) {
+      test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
+        epc_func, pruning_scheme, false, "Scheme1-CUTLASS" );
+    }
+    #endif
   }
 #endif
 }

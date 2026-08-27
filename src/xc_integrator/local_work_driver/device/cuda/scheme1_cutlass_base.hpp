@@ -32,16 +32,20 @@ struct AoSScheme1CUTLASSBase : public AoSScheme1Base {
   void inc_vxc( XCDeviceData*, density_id, bool ) override final;
   void inc_fxc( XCDeviceData*, density_id, bool ) override final;
 
-  /** Multiparticle (NEO) opt-out -- design §1.2's backend-opt-out precedent.
+  /** Multiparticle (NEO) support -- WP2b-A.
    *
-   *  `AoSScheme1CUTLASSBase::Data` sizes its per-task pointer/dimension arrays
-   *  on the FULL task range and then packs them from `host_device_tasks`,
-   *  which under a multiparticle batch is compact (WP2A2 §7.1): the tail of
-   *  every grouped-GEMM argument array would be garbage.  Making those two
-   *  files species-aware is a separate, independently verifiable change, so
-   *  this backend rejects the multiparticle path outright for now.
+   *  `AoSScheme1CUTLASSBase::Data` used to size its per-task pointer/dimension
+   *  arrays on the FULL task range and then pack them from `host_device_tasks`,
+   *  which under a multiparticle batch is compact (WP2A2 §7.1), so the tail of
+   *  every grouped-BLAS argument array would have been garbage.  Its
+   *  `get_mem_req` / `allocate_dynamic_stack` / `pack_and_send` now route
+   *  through `task_is_active()` + `host_bfn_screening()` and the compact task
+   *  count, exactly as `Scheme1DataBase` and `XCDeviceAoSData` do, and its own
+   *  argument arrays are carried in per-species slots (see `Data` below).  The
+   *  species-serial driver therefore gets one grouped Rank2K / GEMM launch per
+   *  species per channel instead of one cuBLAS launch per task.
    */
-  bool supports_multiparticle() const override final { return false; }
+  bool supports_multiparticle() const override final { return true; }
 
   struct Data;
 
@@ -112,6 +116,23 @@ struct AoSScheme1CUTLASSBase::Data : public AoSScheme1Base::Data {
 
   cutlass_data cutlass_stack;
 
+  /** Per-species CUTLASS context (see XCDeviceStackData's multi-species notes).
+   *
+   *  Every one of these fields is a property of ONE species' compact task list:
+   *  the device argument arrays are carved inside that species'
+   *  `allocate_dynamic_stack` and the two host `GemmCoord` vectors are filled
+   *  by its `pack_and_send` and then read back by `cutlass_*::sufficient()` at
+   *  launch time.  Without a slot the last species packed would overwrite them
+   *  all.  Inert at `nspecies() == 1`: `init_species` is never called, the slot
+   *  vector stays empty and `select_species` never fires.
+   */
+  struct cutlass_species_state {
+    cutlass_data                          cutlass_stack;
+    std::vector<cutlass::gemm::GemmCoord> syr2k_sizes_host;
+    std::vector<cutlass::gemm::GemmCoord> problem_sizes_host;
+  };
+  std::vector<cutlass_species_state> cutlass_species_;
+
   template <typename... Args>
   Data( Args&&... args ) : base_type( std::forward<Args>(args)... ) { }
 
@@ -127,6 +148,11 @@ struct AoSScheme1CUTLASSBase::Data : public AoSScheme1Base::Data {
   void pack_and_send( integrator_term_tracker terms,
     host_task_iterator begin, host_task_iterator end, 
     const BasisSetMap& basis_map ) override final;
+
+protected:
+  void store_species_state( size_t p ) override;
+  void load_species_state( size_t p ) override;
+  void resize_species_slots( size_t np ) override;
 
 };
 

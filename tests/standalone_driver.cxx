@@ -66,6 +66,8 @@ int main(int argc, char** argv) {
     size_t      batch_size = 512;
     double      basis_tol  = 1e-10;
     std::string func_spec  = "PBE0";
+    // The pair (EPC) functional
+    std::string epc_func_spec = "EPC17_2";
 
     bool integrate_den      = false;
     bool integrate_vxc      = true;
@@ -95,8 +97,10 @@ int main(int argc, char** argv) {
     OPTIONAL_KEYWORD( "GAUXC.INTEGRATOR_KERNEL", integrator_kernel,  std::string );
     OPTIONAL_KEYWORD( "GAUXC.LWD_KERNEL",        lwd_kernel,         std::string );
     OPTIONAL_KEYWORD( "GAUXC.REDUCTION_KERNEL",  reduction_kernel,   std::string );
+    OPTIONAL_KEYWORD( "GAUXC.EPCFUNC",           epc_func_spec,      std::string );
     string_to_upper( grid_spec          );
     string_to_upper( func_spec          );
+    string_to_upper( epc_func_spec      );
     string_to_upper( rad_quad_spec      );
     string_to_upper( prune_spec         );
     string_to_upper( lb_exec_space_str  );
@@ -145,6 +149,7 @@ int main(int argc, char** argv) {
                 << "  BATCH_SIZE        = " << batch_size << std::endl
                 << "  BASIS_TOL         = " << basis_tol << std::endl
                 << "  FUNCTIONAL        = " << func_spec << std::endl
+                << "  EPC_FUNCTIONAL    = " << epc_func_spec << std::endl
                 << "  LB_EXEC_SPACE     = " << lb_exec_space_str << std::endl
                 << "  INT_EXEC_SPACE    = " << int_exec_space_str << std::endl
                 << "  INTEGRATOR_KERNEL = " << integrator_kernel << std::endl
@@ -215,9 +220,33 @@ int main(int argc, char** argv) {
       sh.set_shell_tolerance( basis_tol );
     }
 
+    // Protonic species of a multiparticle reference; the electron is species 0
+    size_t nprot = 0;
+    {
+      HighFive::File file( ref_file, HighFive::File::ReadOnly );
+      while( file.exist("/PROTONIC_BASIS_" + std::to_string(nprot)) ) nprot++;
+    }
+    const bool neo = nprot > 0;
+    const size_t nspecies = nprot + 1;
+
+    std::vector< BasisSet<double> > bases;
+    if( neo ) {
+      bases.push_back( basis );
+      for( size_t i = 0; i < nprot; ++i ) {
+        BasisSet<double> prot_basis;
+        read_hdf5_record( prot_basis, ref_file,
+          "/PROTONIC_BASIS_" + std::to_string(i) );
+        for( auto& sh : prot_basis ) sh.set_shell_tolerance( basis_tol );
+        bases.push_back( std::move(prot_basis) );
+      }
+      if( !world_rank ) std::cout << "  NEO SPECIES       = " << nspecies
+                                  << std::endl << std::endl;
+    }
+
     // Setup load balancer
     LoadBalancerFactory lb_factory( lb_exec_space, "Replicated");
-    auto lb = lb_factory.get_shared_instance( rt, mol, mg, basis);
+    auto lb = neo ? lb_factory.get_shared_instance( rt, mol, mg, bases) :
+                    lb_factory.get_shared_instance( rt, mol, mg, basis);
 
     // Apply molecular partition weights
     MolecularWeightsFactory mw_factory( int_exec_space, "Default", 
@@ -424,6 +453,48 @@ int main(int argc, char** argv) {
         }
       }
     }
+
+    // The protonic species' densities and their stored results
+    std::vector<matrix_type> prot_P, prot_Pz, prot_VXC_ref, prot_VXCz_ref;
+    std::vector<double> prot_EXC_ref(nprot, 0.), EPC_EXC_ref(nprot, 0.);
+    std::vector<bool> prot_uks(nprot, false);
+    if( neo ) {
+      HighFive::File file( ref_file, HighFive::File::ReadOnly );
+      prot_P.resize(nprot); prot_Pz.resize(nprot);
+      prot_VXC_ref.resize(nprot); prot_VXCz_ref.resize(nprot);
+      for( size_t i = 0; i < nprot; ++i ) {
+        const auto idx  = std::to_string(i);
+        const auto pnbf = bases[i+1].nbf();
+        auto dset = file.getDataSet("/PROTONIC_DENSITY_SCALAR_" + idx);
+        auto dims = dset.getDimensions();
+        if( dims[0] != size_t(pnbf) or dims[1] != size_t(pnbf) )
+          GAUXC_GENERIC_EXCEPTION("Protonic Density Not Compatible With Basis");
+        prot_P[i] = matrix_type( pnbf, pnbf );
+        dset.read( prot_P[i].data() );
+
+        prot_uks[i] = file.exist("/PROTONIC_DENSITY_Z_" + idx);
+        if( prot_uks[i] ) {
+          prot_Pz[i] = matrix_type( pnbf, pnbf );
+          file.getDataSet("/PROTONIC_DENSITY_Z_" + idx).read( prot_Pz[i].data() );
+        }
+
+        prot_VXC_ref[i]  = matrix_type::Zero( pnbf, pnbf );
+        prot_VXCz_ref[i] = matrix_type::Zero( pnbf, pnbf );
+        if( integrate_vxc ) try {
+          file.getDataSet("/PROTONIC_VXC_SCALAR_" + idx).read( prot_VXC_ref[i].data() );
+          if( prot_uks[i] )
+            file.getDataSet("/PROTONIC_VXC_Z_" + idx).read( prot_VXCz_ref[i].data() );
+          file.getDataSet("/PROTONIC_EXC_" + idx).read( &prot_EXC_ref[i] );
+          file.getDataSet("/EPC_EXC_" + idx).read( &EPC_EXC_ref[i] );
+        } catch(...) {
+          if(world_rank == 0) {
+            std::cout << "** Warning: Could Not Find Reference PROTONIC VXC/EXC "
+                      << i << std::endl;
+          }
+        }
+      }
+    }
+
     // Setup XC functional
     auto polar = (uks or gks) ? Spin::Polarized : Spin::Unpolarized;
     functional_type func;
@@ -442,6 +513,24 @@ int main(int argc, char** argv) {
       func = functional_type(funcs);
     }
 #endif
+
+    // One intra functional on the electron, one pair functional per species
+    MultiParticleFunctionalSpec functional_spec;
+    std::vector< XCIntegrator<matrix_type>::multiparticle_density > densities;
+    if( neo ) {
+      auto epc_func = std::make_shared<functional_type>( Backend::builtin,
+        functional_map.value(epc_func_spec), Spin::Polarized );
+      functional_spec.intra_functionals.resize( nspecies );
+      functional_spec.intra_functionals[0].push_back(
+        std::make_shared<functional_type>(func) );
+      for( size_t i = 0; i < nprot; ++i )
+        functional_spec.inter_functionals.push_back(
+          MultiParticlePairFunctional{ 0, i+1, { epc_func } } );
+
+      densities.push_back( { &P, rks ? nullptr : &Pz } );
+      for( size_t i = 0; i < nprot; ++i )
+        densities.push_back( { &prot_P[i], prot_uks[i] ? &prot_Pz[i] : nullptr } );
+    }
 
     // Setup Integrator
     XCIntegratorFactory<matrix_type> integrator_factory( int_exec_space , 
@@ -468,8 +557,16 @@ int main(int argc, char** argv) {
       N_EL = static_cast<double>(N_EL_ref);
     }
 
+    XCIntegrator<matrix_type>::multiparticle_exc_vxc_type result;
     if( integrate_vxc ) {
-      if( rks ) {
+      if( neo ) {
+        result = integrator.eval_exc_vxc( densities, functional_spec );
+        // Species 0 is the electron
+        EXC = result.intra_exc[0];
+        VXC = result.VXCs[0];
+        if( not rks ) VXCz = result.VXCz[0];
+      }
+      else if( rks ) {
         std::tie(EXC, VXC) = integrator.eval_exc_vxc( P );
       }
       else if ( uks ) {
@@ -494,7 +591,10 @@ int main(int argc, char** argv) {
 
     std::vector<double> EXC_GRAD;
     if( integrate_exc_grad ) {
-      if( rks ) {
+      if( neo ) {
+        EXC_GRAD = integrator.eval_exc_grad( densities, functional_spec );
+      }
+      else if( rks ) {
         EXC_GRAD = integrator.eval_exc_grad( P );
       }
       else if( uks ) {
@@ -717,6 +817,36 @@ int main(int argc, char** argv) {
       }
       }
 
+      if( integrate_vxc and neo ) {
+      for( size_t i = 0; i < nprot; ++i ) {
+        const auto pnbf = bases[i+1].nbf();
+        std::cout << "PROTONIC SPECIES " << i << std::endl;
+        std::cout << "  EXC (ref)        = " << prot_EXC_ref[i] << std::endl;
+        std::cout << "  EXC (calc)       = " << result.intra_exc[i+1] << std::endl;
+        std::cout << "  EXC Diff (abs)   = "
+                  << std::abs(prot_EXC_ref[i] - result.intra_exc[i+1]) << std::endl;
+        std::cout << "  | VXC (ref)  |_F = " << prot_VXC_ref[i].norm() << std::endl;
+        std::cout << "  | VXC (calc) |_F = " << result.VXCs[i+1].norm() << std::endl;
+        std::cout << "  RMS VXC Diff     = "
+                  << (prot_VXC_ref[i] - result.VXCs[i+1]).norm() / pnbf << std::endl;
+        if( prot_uks[i] ) {
+        std::cout << "  | VXCz (ref)  |_F = " << prot_VXCz_ref[i].norm() << std::endl;
+        std::cout << "  | VXCz (calc) |_F = " << result.VXCz[i+1].norm() << std::endl;
+        std::cout << "  RMS VXCz Diff     = "
+                  << (prot_VXCz_ref[i] - result.VXCz[i+1]).norm() / pnbf << std::endl;
+        }
+      }
+      for( size_t j = 0; j < nprot; ++j ) {
+        std::cout << "EPC PAIR " << j << " (0," << j+1 << ")" << std::endl;
+        std::cout << "  EXC (ref)        = " << EPC_EXC_ref[j] << std::endl;
+        std::cout << "  EXC (calc)       = " << result.inter_pair_exc[j] << std::endl;
+        std::cout << "  EXC Diff         = "
+                  << std::abs(EPC_EXC_ref[j] - result.inter_pair_exc[j]) /
+                     std::abs(EPC_EXC_ref[j]) << std::endl;
+      }
+      std::cout << "EXC (inter, total) = " << result.inter_exc << std::endl;
+      }
+
       if(integrate_exc_grad) {
       double exc_grad_ref_nrm(0.), exc_grad_calc_nrm(0.), exc_grad_diff_nrm(0.);
       for( auto i = 0; i < 3*mol.size(); ++i ) {
@@ -776,6 +906,10 @@ int main(int argc, char** argv) {
       // Write Basis
       write_hdf5_record( basis, outfname, "/BASIS" );
 
+      for( size_t i = 0; i < nprot; ++i )
+        write_hdf5_record( bases[i+1], outfname,
+          "/PROTONIC_BASIS_" + std::to_string(i) );
+
       // Write out matrices
       HighFive::File file( outfname, HighFive::File::ReadWrite );
       HighFive::DataSpace mat_space( basis.nbf(), basis.nbf() );
@@ -817,6 +951,29 @@ int main(int argc, char** argv) {
         dset.write_raw( &EXC );
       }
 
+      for( size_t i = 0; i < nprot; ++i ) {
+        const auto idx = std::to_string(i);
+        HighFive::DataSpace pmat_space( bases[i+1].nbf(), bases[i+1].nbf() );
+        dset = file.createDataSet<double>( "/PROTONIC_DENSITY_SCALAR_"+idx, pmat_space );
+        dset.write_raw( prot_P[i].data() );
+        if( prot_uks[i] ) {
+          dset = file.createDataSet<double>( "/PROTONIC_DENSITY_Z_"+idx, pmat_space );
+          dset.write_raw( prot_Pz[i].data() );
+        }
+        if( integrate_vxc ) {
+          dset = file.createDataSet<double>( "/PROTONIC_VXC_SCALAR_"+idx, pmat_space );
+          dset.write_raw( result.VXCs[i+1].data() );
+          if( prot_uks[i] ) {
+            dset = file.createDataSet<double>( "/PROTONIC_VXC_Z_"+idx, pmat_space );
+            dset.write_raw( result.VXCz[i+1].data() );
+          }
+          dset = file.createDataSet<double>( "/PROTONIC_EXC_"+idx, sca_space );
+          dset.write_raw( &result.intra_exc[i+1] );
+          dset = file.createDataSet<double>( "/EPC_EXC_"+idx, sca_space );
+          dset.write_raw( &result.inter_pair_exc[i] );
+        }
+      }
+
       if( integrate_exx ) {
         dset = file.createDataSet<double>( "/K", mat_space );
         dset.write_raw( K.data() );
@@ -826,6 +983,8 @@ int main(int argc, char** argv) {
         HighFive::DataSpace grad_space( mol.size(), 3 );
         dset = file.createDataSet<double>( "/EXC_GRAD", grad_space );
         dset.write_raw( EXC_GRAD.data() );
+        // The multiparticle gradient carries the weight derivatives
+        if( neo ) dset.createAttribute<int>( "includes_weight_derivatives", 1 );
       }
 
       if (integrate_dd_psi) {

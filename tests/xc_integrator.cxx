@@ -390,6 +390,298 @@ functional_type make_functional(ExchCXX::Functional func_key, ExchCXX::Spin spin
 }
 
 
+// A NEO reference file carries the single-species datasets for the electron,
+// which is species 0, and per protonic species i (GauXC species i+1):
+//   /PROTONIC_BASIS_<i>            /PROTONIC_VXC_SCALAR_<i>
+//   /PROTONIC_DENSITY_SCALAR_<i>   /PROTONIC_VXC_Z_<i>
+//   /PROTONIC_DENSITY_Z_<i>        /PROTONIC_EXC_<i>
+//   /EPC_EXC_<j>                   pair j = (electron, species j+1)
+
+using multiparticle_density_type =
+  XCIntegrator<Eigen::MatrixXd>::multiparticle_density;
+
+std::string neo_dataset( std::string base, size_t i ) {
+  return base + std::to_string(i);
+}
+
+
+// The system a NEO reference file describes: molecule, bases and densities.
+struct neo_reference {
+  Molecule                        mol;
+  std::vector< BasisSet<double> > bases;
+  Eigen::MatrixXd                 Ps, Pz;
+  std::vector< Eigen::MatrixXd >  prot_Ps, prot_Pz;
+  bool                            uks = false;
+  std::vector<bool>               prot_uks;
+
+  size_t nspecies() const { return bases.size();     }
+  size_t nprot()    const { return bases.size() - 1; }
+
+  std::vector<multiparticle_density_type> densities() const {
+    std::vector<multiparticle_density_type> d;
+    d.push_back( { &Ps, uks ? &Pz : nullptr } );
+    for( size_t i = 0; i < nprot(); ++i )
+      d.push_back( { &prot_Ps[i], prot_uks[i] ? &prot_Pz[i] : nullptr } );
+    return d;
+  }
+};
+
+neo_reference read_neo_reference( std::string reference_file ) {
+
+  neo_reference ref;
+  size_t nprot = 0;
+  {
+    HighFive::File file( reference_file, HighFive::File::ReadOnly );
+    ref.uks = file.exist("/DENSITY_Z");
+    while( file.exist( neo_dataset("/PROTONIC_BASIS_", nprot) ) ) nprot++;
+  }
+  REQUIRE( nprot > 0 );
+
+  read_hdf5_record( ref.mol, reference_file, "/MOLECULE" );
+  ref.bases.resize( nprot + 1 );
+  read_hdf5_record( ref.bases[0], reference_file, "/BASIS" );
+  for( size_t i = 0; i < nprot; ++i )
+    read_hdf5_record( ref.bases[i+1], reference_file,
+      neo_dataset("/PROTONIC_BASIS_", i) );
+  for( auto& b : ref.bases ) for( auto& sh : b )
+    sh.set_shell_tolerance( std::numeric_limits<double>::epsilon() );
+
+  HighFive::File file( reference_file, HighFive::File::ReadOnly );
+  auto read_matrix = [&]( std::string name ) {
+    auto dset = file.getDataSet( name );
+    auto dims = dset.getDimensions();
+    Eigen::MatrixXd M( dims[0], dims[1] );
+    dset.read( M.data() );
+    return M;
+  };
+
+  ref.Ps = read_matrix( ref.uks ? "/DENSITY_SCALAR" : "/DENSITY" );
+  if( ref.uks ) ref.Pz = read_matrix( "/DENSITY_Z" );
+
+  ref.prot_Ps.resize( nprot );
+  ref.prot_Pz.resize( nprot );
+  ref.prot_uks.assign( nprot, false );
+  for( size_t i = 0; i < nprot; ++i ) {
+    ref.prot_Ps[i]  = read_matrix( neo_dataset("/PROTONIC_DENSITY_SCALAR_", i) );
+    ref.prot_uks[i] = file.exist( neo_dataset("/PROTONIC_DENSITY_Z_", i) );
+    if( ref.prot_uks[i] )
+      ref.prot_Pz[i] = read_matrix( neo_dataset("/PROTONIC_DENSITY_Z_", i) );
+  }
+
+  return ref;
+}
+
+void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
+  std::string reference_file,
+  functional_type& func,      // the electron's intra functional
+  functional_type& epc_func,  // the electron/particle pair functional
+  PruningScheme pruning_scheme,
+  bool check_grad,
+  std::string lwd_kernel = "Default" ) {
+
+  using matrix_type = Eigen::MatrixXd;
+
+  auto ref = read_neo_reference( reference_file );
+  const size_t nprot    = ref.nprot();
+  const size_t nspecies = ref.nspecies();
+  const auto&  mol      = ref.mol;
+  const auto&  bases    = ref.bases;
+
+  matrix_type VXC_ref, VXCz_ref;
+  std::vector<matrix_type> prot_VXCs_ref(nprot), prot_VXCz_ref(nprot);
+  std::vector<double> prot_EXC_ref(nprot), EPC_EXC_ref(nprot), EXC_GRAD_ref;
+  double EXC_ref = 0.;
+  bool has_exc_grad = false;
+
+  {
+    HighFive::File file( reference_file, HighFive::File::ReadOnly );
+    has_exc_grad = file.exist("/EXC_GRAD");
+
+    auto read_matrix = [&]( std::string name ) {
+      auto dset = file.getDataSet( name );
+      auto dims = dset.getDimensions();
+      matrix_type M( dims[0], dims[1] );
+      dset.read( M.data() );
+      return M;
+    };
+
+    VXC_ref = read_matrix( ref.uks ? "/VXC_SCALAR" : "/VXC" );
+    if( ref.uks ) VXCz_ref = read_matrix("/VXC_Z");
+    file.getDataSet("/EXC").read( &EXC_ref );
+
+    for( size_t i = 0; i < nprot; ++i ) {
+      prot_VXCs_ref[i] = read_matrix( neo_dataset("/PROTONIC_VXC_SCALAR_", i) );
+      if( ref.prot_uks[i] )
+        prot_VXCz_ref[i] = read_matrix( neo_dataset("/PROTONIC_VXC_Z_", i) );
+      file.getDataSet( neo_dataset("/PROTONIC_EXC_", i) ).read( &prot_EXC_ref[i] );
+      file.getDataSet( neo_dataset("/EPC_EXC_", i)      ).read( &EPC_EXC_ref[i]  );
+    }
+
+    if( has_exc_grad ) {
+      EXC_GRAD_ref.resize( 3*mol.size() );
+      file.getDataSet("/EXC_GRAD").read( EXC_GRAD_ref.data() );
+    }
+  }
+
+  auto mg = MolGridFactory::create_default_molgrid(mol, pruning_scheme,
+    BatchSize(512), RadialQuad::MuraKnowles, AtomicGridSizeDefault::UltraFineGrid);
+
+  LoadBalancerFactory lb_factory(ExecutionSpace::Host, "Default");
+  auto lb = lb_factory.get_instance(rt, mol, mg, bases);
+
+  MolecularWeightsFactory mw_factory( ex, "Default", MolecularWeightsSettings{} );
+  auto mw = mw_factory.get_instance();
+  mw.modify_weights(lb);
+
+  // An intra functional on the electron, one pair functional per species
+  MultiParticleFunctionalSpec spec;
+  spec.intra_functionals.resize( nspecies );
+  spec.intra_functionals[0].push_back( std::make_shared<functional_type>(func) );
+  for( size_t i = 0; i < nprot; ++i )
+    spec.inter_functionals.push_back( MultiParticlePairFunctional{ 0, i+1,
+      { std::make_shared<functional_type>(epc_func) } } );
+
+  MultiParticleXCTerms terms;
+  for( size_t p = 0; p < nspecies; ++p ) {
+    terms.active_intra.push_back(p);
+    terms.vxc_targets.push_back(p);
+  }
+  for( size_t j = 0; j < nprot; ++j ) terms.active_inter.push_back(j);
+
+  XCIntegratorFactory<matrix_type> integrator_factory( ex, "Replicated",
+    "Default", lwd_kernel, "Default" );
+  auto integrator = integrator_factory.get_instance( func, lb );
+
+  auto densities = ref.densities();
+
+  auto exc_approx = []( double x ) { return Approx(x).epsilon(1e-10).margin(1e-14); };
+
+  auto result = integrator.eval_exc_vxc( densities, spec, terms );
+
+  // Shape
+  REQUIRE( lb.basis_count()             == nspecies );
+  REQUIRE( result.intra_exc.size()      == nspecies );
+  REQUIRE( result.VXCs.size()           == nspecies );
+  REQUIRE( result.VXCz.size()           == nspecies );
+  REQUIRE( result.inter_pair_exc.size() == nprot    );
+
+  // Per-species intra EXC
+  CHECK( result.intra_exc[0] == exc_approx(EXC_ref) );
+  for( size_t i = 0; i < nprot; ++i ) {
+    INFO( "protonic species " << i );
+    CHECK( result.intra_exc[i+1] == exc_approx(prot_EXC_ref[i]) );
+  }
+
+  // Per-pair EPC EXC, each pair and their sum
+  double epc_sum = 0.;
+  for( size_t j = 0; j < nprot; ++j ) {
+    INFO( "EPC pair " << j );
+    CHECK( result.inter_pair_exc[j] == exc_approx(EPC_EXC_ref[j]) );
+    epc_sum += result.inter_pair_exc[j];
+  }
+  CHECK( result.inter_exc == exc_approx(epc_sum) );
+
+  // Per-species, per-channel VXC
+  CHECK( (result.VXCs[0] - VXC_ref).norm() / bases[0].nbf() < 1e-10 );
+  if( ref.uks ) CHECK( (result.VXCz[0] - VXCz_ref).norm() / bases[0].nbf() < 1e-10 );
+  for( size_t i = 0; i < nprot; ++i ) {
+    INFO( "protonic species " << i );
+    const auto pnbf = bases[i+1].nbf();
+    CHECK( (result.VXCs[i+1] - prot_VXCs_ref[i]).norm() / pnbf < 1e-10 );
+    if( ref.prot_uks[i] )
+      CHECK( (result.VXCz[i+1] - prot_VXCz_ref[i]).norm() / pnbf < 1e-10 );
+  }
+
+  // The EXC gradient, weight derivatives included
+  std::vector<double> EXC_GRAD_full;
+  auto neo_exc_grad = [&]( auto& itg, bool weight_derivatives ) {
+    IntegratorSettingsEXC_GRAD s;
+    s.include_weight_derivatives = weight_derivatives;
+    return itg.eval_exc_grad( densities, spec, terms, s );
+  };
+
+  if( check_grad ) {
+    EXC_GRAD_full = neo_exc_grad( integrator, true );
+    REQUIRE( EXC_GRAD_full.size() == 3*mol.size() );
+
+    if( has_exc_grad ) {
+      using map_type = Eigen::Map<Eigen::MatrixXd>;
+      map_type EXC_GRAD_ref_map( EXC_GRAD_ref.data(), mol.size(), 3 );
+      map_type EXC_GRAD_map( EXC_GRAD_full.data(), mol.size(), 3 );
+      auto EXC_GRAD_diff_nrm = (EXC_GRAD_ref_map - EXC_GRAD_map).norm();
+      CHECK( EXC_GRAD_diff_nrm / std::sqrt(3.0*mol.size()) < 1e-8 );
+    }
+  }
+
+  // The answer does not depend on the order the protonic species are given in
+  if( nprot > 1 ) {
+    std::vector<size_t> perm( nspecies );
+    perm[0] = 0;
+    for( size_t k = 1; k < nspecies; ++k ) perm[k] = nspecies - k;
+
+    std::vector< BasisSet<double> >          pbases;
+    std::vector<multiparticle_density_type>  pdens;
+    MultiParticleFunctionalSpec              pspec;
+    pspec.intra_functionals.resize( nspecies );
+    for( size_t k = 0; k < nspecies; ++k ) {
+      pbases.push_back( bases[perm[k]] );
+      pdens.push_back( densities[perm[k]] );
+      pspec.intra_functionals[k] = spec.intra_functionals[perm[k]];
+    }
+    for( const auto& pf : spec.inter_functionals )
+      pspec.inter_functionals.push_back( MultiParticlePairFunctional{
+        perm[pf.electron], perm[pf.particle], pf.functionals } );
+
+    auto plb = lb_factory.get_instance(rt, mol, mg, pbases);
+    mw.modify_weights(plb);
+    auto pintegrator = integrator_factory.get_instance( func, plb );
+    auto r = pintegrator.eval_exc_vxc( pdens, pspec, terms );
+
+    for( size_t p = 0; p < nspecies; ++p ) {
+      INFO( "species " << p << " -> " << perm[p] );
+      CHECK( r.intra_exc[perm[p]] ==
+             Approx(result.intra_exc[p]).epsilon(1e-12).margin(1e-14) );
+      CHECK( (r.VXCs[perm[p]] - result.VXCs[p]).norm() / bases[p].nbf() < 1e-11 );
+    }
+    for( size_t j = 0; j < nprot; ++j ) {
+      INFO( "EPC pair " << j );
+      CHECK( r.inter_pair_exc[j] ==
+             Approx(result.inter_pair_exc[j]).epsilon(1e-12).margin(1e-14) );
+    }
+
+    if( check_grad ) {
+      IntegratorSettingsEXC_GRAD pgs;
+      pgs.include_weight_derivatives = true;
+      auto pg = pintegrator.eval_exc_grad( pdens, pspec, terms, pgs );
+      REQUIRE( pg.size() == EXC_GRAD_full.size() );
+      double worst = 0.;
+      for( size_t k = 0; k < pg.size(); ++k )
+        worst = std::max( worst, std::abs( pg[k] - EXC_GRAD_full[k] ) );
+      INFO( "worst per-atom deviation under species permutation " << worst );
+      CHECK( worst < 1e-8 );
+    }
+  }
+
+}
+
+void test_neo_integrator(std::string reference_file, functional_type& func,
+  functional_type& epc_func, PruningScheme pruning_scheme) {
+
+#ifdef GAUXC_HAS_DEVICE
+  auto rt = DeviceRuntimeEnvironment(GAUXC_MPI_CODE(MPI_COMM_WORLD,) 0.9);
+#else
+  auto rt = RuntimeEnvironment(GAUXC_MPI_CODE(MPI_COMM_WORLD));
+#endif
+
+#ifdef GAUXC_HAS_HOST
+  SECTION( "Host" ) {
+    test_neo_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
+      epc_func, pruning_scheme, true );
+  }
+#endif
+}
+
+
 TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
 
   auto pol     = ExchCXX::Spin::Polarized;
@@ -511,5 +803,59 @@ TEST_CASE( "XC Integrator", "[xc-integrator]" ) {
     auto func = make_functional(pbe0, unpol);
     test_integrator(GAUXC_REF_DATA_PATH "/h2o2_def2-qzvp.hdf5", 
         func, PruningScheme::Unpruned );
+  }
+}
+
+
+TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
+
+  auto pol     = ExchCXX::Spin::Polarized;
+  auto unpol   = ExchCXX::Spin::Unpolarized;
+  auto blyp    = ExchCXX::Functional::BLYP;
+  auto b3lyp   = ExchCXX::Functional::B3LYP;
+  auto pbe     = ExchCXX::Functional::PBE;
+  auto svwn5   = ExchCXX::Functional::SVWN5;
+  auto epc17_2 = ExchCXX::Functional::EPC17_2;
+
+  // Reference settings: ULTRAFINE, MuraKnowles, unpruned, batch 512, SSF
+
+  SECTION( "HCN / BLYP, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(blyp,    unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/hcn_blyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  SECTION( "COH2 / SVWN5, EPC-17-2 / STO-3G, prot-SP, one protonic species" ) {
+    auto func    = make_functional(svwn5,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2_svwn5_epc17-2_sto-3g_protsp_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  SECTION( "COH2 / SVWN5, EPC-17-2 / STO-3G, prot-SP, two protonic species" ) {
+    auto func    = make_functional(svwn5,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2_svwn5_epc17-2_sto-3g_protsp-dist_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  SECTION( "COH2 cation (doublet) / PBE, EPC-17-2 / cc-pVDZ, prot-PB4-D" ) {
+    auto func    = make_functional(pbe,     pol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/coh2-cation_upbe_epc17-2_cc-pvdz_pb4d_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
+  }
+
+  SECTION( "W08 water octamer, 16 quantum protons / B3LYP, EPC-17-2 / cc-pVDZ, prot-SP" ) {
+    auto func    = make_functional(b3lyp,   unpol);
+    auto epcfunc = make_functional(epc17_2, pol);
+    test_neo_integrator(GAUXC_REF_DATA_PATH
+      "/w08_b3lyp_epc17-2_cc-pvdz_16protsp_ssf.hdf5", func, epcfunc,
+      PruningScheme::Unpruned );
   }
 }

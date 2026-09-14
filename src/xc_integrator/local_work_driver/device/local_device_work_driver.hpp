@@ -126,6 +126,8 @@ public:
 
   std::unique_ptr<XCDeviceData> create_device_data(const DeviceRuntimeEnvironment&);
 
+  bool supports_multiparticle() const;
+
 private: 
 
   pimpl_type pimpl_; ///< Implementation

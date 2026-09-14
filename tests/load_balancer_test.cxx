@@ -174,6 +174,41 @@ TEST_CASE( "DefaultLoadBalancer", "[load_balancer]" ) {
       CHECK( tasks[i].bfn_screening.shell_list == host_tasks[i].bfn_screening.shell_list );
     }
   }
+
+  SECTION("Default Device Multiple Bases") {
+
+    BasisSet<double> basis2 = make_631Gd( mol, SphericalType(true) );
+    for( auto& sh : basis2 )
+      sh.set_shell_tolerance( std::numeric_limits<double>::epsilon() );
+    std::vector<BasisSet<double>> bases{ basis, basis2 };
+
+    LoadBalancerFactory lb_factory( ExecutionSpace::Device, "Default" );
+    auto lb = lb_factory.get_instance( world, mol, mg, bases );
+    auto& tasks = lb.get_tasks();
+
+    REQUIRE( lb.basis_count() == 2 );
+    REQUIRE_FALSE( tasks.empty() );
+
+    // Make sure Host/Device tasks are identical for every basis
+    LoadBalancerFactory host_lb_factory( ExecutionSpace::Host, "Default" );
+    auto host_lb = host_lb_factory.get_instance( world, mol, mg, bases );
+    auto& host_tasks = host_lb.get_tasks();
+
+    REQUIRE( tasks.size() == host_tasks.size() );
+    for( auto i = 0; i < host_tasks.size(); ++i ) {
+      const auto& t  = tasks[i];
+      const auto& ht = host_tasks[i];
+      REQUIRE( t.bfn_screenings.size() == 2 );
+      CHECK( t.iParent == ht.iParent );
+      CHECK( t.npts == ht.npts );
+      CHECK( t.bfn_screening.shell_list == t.basis_screening(0).shell_list );
+      CHECK( t.bfn_screening.nbe == t.basis_screening(0).nbe );
+      for( auto ib = 0; ib < 2; ++ib ) {
+        CHECK( t.basis_screening(ib).shell_list == ht.basis_screening(ib).shell_list );
+        CHECK( t.basis_screening(ib).nbe == ht.basis_screening(ib).nbe );
+      }
+    }
+  }
 #endif
 
 #endif

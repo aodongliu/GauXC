@@ -41,11 +41,9 @@ std::shared_ptr<LoadBalancer> LoadBalancerFactory::get_shared_instance(
         rt, mol, mg, bases );
     #ifdef GAUXC_HAS_DEVICE
     case ExecutionSpace::Device:
-      if( bases.size() != 1 )
-        GAUXC_GENERIC_EXCEPTION("Device LoadBalancer does not support multiple basis sets");
       using device_factory = LoadBalancerDeviceFactory;
       return device_factory::get_shared_instance(kernel_name_,
-        rt, mol, mg, bases.front() );
+        rt, mol, mg, bases );
     #endif
     default:
       GAUXC_GENERIC_EXCEPTION("Unrecognized Execution Space");

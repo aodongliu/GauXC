@@ -73,7 +73,8 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
 
   void save_xmat( XCDeviceData*, bool do_grad, density_id den ) override final;
 
-  
+  bool supports_multiparticle() const override { return true; }
+
   // Overridable APIs
   template<bool is_trial>
   void eval_xmat_impl(double fac, XCDeviceData*, bool do_grad, density_id );

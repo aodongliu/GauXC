@@ -200,6 +200,11 @@ std::unique_ptr<XCDeviceData> LocalDeviceWorkDriver::create_device_data(const De
   return pimpl_->create_device_data(rt);
 }
 
+bool LocalDeviceWorkDriver::supports_multiparticle() const {
+  throw_if_invalid_pimpl(pimpl_);
+  return pimpl_->supports_multiparticle();
+}
+
 void LocalDeviceWorkDriver::exx_ek_shellpair_collision( double eps_E, double eps_K, 
   XCDeviceData* device_data, host_task_iterator tb, host_task_iterator te,
   const ShellPairCollection<double>& shpairs ) {

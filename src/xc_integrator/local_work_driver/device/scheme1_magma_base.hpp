@@ -20,6 +20,7 @@ struct AoSScheme1MAGMABase : public AoSScheme1Base {
   void eval_exx_fmat( XCDeviceData* ) override final;
   void inc_vxc( XCDeviceData*, density_id den, bool ) override final;
   void inc_exx_k( XCDeviceData* ) override final;
+  bool supports_multiparticle() const override final { return false; }
 
   struct Data;
 

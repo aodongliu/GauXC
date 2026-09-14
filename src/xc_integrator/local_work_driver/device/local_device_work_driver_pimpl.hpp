@@ -93,6 +93,8 @@ struct LocalDeviceWorkDriverPIMPL {
 
   virtual std::unique_ptr<XCDeviceData> create_device_data(const DeviceRuntimeEnvironment&) = 0;
 
+  virtual bool supports_multiparticle() const { return false; }
+
 };
 
 }

@@ -17,6 +17,8 @@
 #include "device/common/device_blas.hpp"
 
 #include "device/cuda/kernels/cutlass_wrapper.hpp"
+#include "device/cuda/kernels/syr2k_tiny.hpp"
+#include "device/common/syr2k_size_classes.hpp"
 
 namespace GauXC {
 
@@ -125,51 +127,78 @@ void AoSScheme1CUTLASSBase::inc_potential_impl(XCDeviceData* _data, density_id d
   const auto ntasks = tasks.size();
 
   auto cutlass_stack = data->cutlass_stack;
-  cutlass_syr2k(
-    cutlass_stack.syr2k_sizes_device,
-    data->syr2k_sizes_host.data(),
-    ntasks,
-    cutlass_stack.bf_array_device, cutlass_stack.zmat_array_device,
-    cutlass_stack.vmat_array_device, cutlass_stack.vmat_array_device,
-    cutlass_stack.ld64_bf_array_device, cutlass_stack.ld64_zmat_array_device,
-    cutlass_stack.ld64_vmat_array_device, cutlass_stack.ld64_vmat_array_device,
-    1.0, 0.0,
-    data->device_backend_->queue()
-  );
+  const auto& work_ranges = data->task_work_ranges_;
+
+  // V += A Z^T + Z A^T over every task, in one grouped call, or one call per
+  // work range with the executor of the range's syr2k size class
+  auto inc_potential_syr2k = [&]( double** ptr_A, double** ptr_B,
+    int64_t* ld_A, int64_t* ld_B, double beta ) {
+
+    if( work_ranges.empty() ) {
+      cutlass_syr2k(
+        cutlass_stack.syr2k_sizes_device,
+        data->syr2k_sizes_host.data(),
+        ntasks,
+        ptr_A, ptr_B,
+        cutlass_stack.vmat_array_device, cutlass_stack.vmat_array_device,
+        ld_A, ld_B,
+        cutlass_stack.ld64_vmat_array_device, cutlass_stack.ld64_vmat_array_device,
+        1.0, beta,
+        data->device_backend_->queue()
+      );
+      return;
+    }
+
+    for( const auto& range : work_ranges ) {
+      const size_t first = range.first;
+      const int    count = range.count ? range.count : ntasks - first;
+      const auto   size_class = syr2k_size_class_of( range.nbe_max );
+      if( size_class == syr2k_size_class::TINY ) {
+        syr2k_tiny(
+          count,
+          cutlass_stack.syr2k_sizes_device + first,
+          ptr_A + first, ptr_B + first,
+          cutlass_stack.vmat_array_device + first,
+          cutlass_stack.vmat_array_device + first,
+          ld_A + first, ld_B + first,
+          cutlass_stack.ld64_vmat_array_device + first,
+          cutlass_stack.ld64_vmat_array_device + first,
+          1.0, beta,
+          data->device_backend_->queue()
+        );
+        continue;
+      }
+      auto cutlass_syr2k_tile = size_class == syr2k_size_class::SMALL
+        ? &cutlass_syr2k_32x32 : &cutlass_syr2k;
+      cutlass_syr2k_tile(
+        cutlass_stack.syr2k_sizes_device + first,
+        data->syr2k_sizes_host.data() + first,
+        count,
+        ptr_A + first, ptr_B + first,
+        cutlass_stack.vmat_array_device + first,
+        cutlass_stack.vmat_array_device + first,
+        ld_A + first, ld_B + first,
+        cutlass_stack.ld64_vmat_array_device + first,
+        cutlass_stack.ld64_vmat_array_device + first,
+        1.0, beta,
+        data->device_backend_->queue()
+      );
+    }
+  };
+
+  inc_potential_syr2k( cutlass_stack.bf_array_device,
+    cutlass_stack.zmat_array_device, cutlass_stack.ld64_bf_array_device,
+    cutlass_stack.ld64_zmat_array_device, 0.0 );
   if(do_m) {
-    cutlass_syr2k(
-      cutlass_stack.syr2k_sizes_device,
-      data->syr2k_sizes_host.data(),
-      ntasks,
-      cutlass_stack.bfx_array_device, cutlass_stack.xmat_x_array_device,
-      cutlass_stack.vmat_array_device, cutlass_stack.vmat_array_device,
-      cutlass_stack.ld64_bf_array_device, cutlass_stack.ld64_zmat_array_device,
-      cutlass_stack.ld64_vmat_array_device, cutlass_stack.ld64_vmat_array_device,
-      1.0, 1.0,
-      data->device_backend_->queue()
-    );
-    cutlass_syr2k(
-      cutlass_stack.syr2k_sizes_device,
-      data->syr2k_sizes_host.data(),
-      ntasks,
-      cutlass_stack.bfy_array_device, cutlass_stack.xmat_y_array_device,
-      cutlass_stack.vmat_array_device, cutlass_stack.vmat_array_device,
-      cutlass_stack.ld64_bf_array_device, cutlass_stack.ld64_zmat_array_device,
-      cutlass_stack.ld64_vmat_array_device, cutlass_stack.ld64_vmat_array_device,
-      1.0, 1.0,
-      data->device_backend_->queue()
-    );
-    cutlass_syr2k(
-      cutlass_stack.syr2k_sizes_device,
-      data->syr2k_sizes_host.data(),
-      ntasks,
-      cutlass_stack.bfz_array_device, cutlass_stack.xmat_z_array_device,
-      cutlass_stack.vmat_array_device, cutlass_stack.vmat_array_device,
-      cutlass_stack.ld64_bf_array_device, cutlass_stack.ld64_zmat_array_device,
-      cutlass_stack.ld64_vmat_array_device, cutlass_stack.ld64_vmat_array_device,
-      1.0, 1.0,
-      data->device_backend_->queue()
-    );
+    inc_potential_syr2k( cutlass_stack.bfx_array_device,
+      cutlass_stack.xmat_x_array_device, cutlass_stack.ld64_bf_array_device,
+      cutlass_stack.ld64_zmat_array_device, 1.0 );
+    inc_potential_syr2k( cutlass_stack.bfy_array_device,
+      cutlass_stack.xmat_y_array_device, cutlass_stack.ld64_bf_array_device,
+      cutlass_stack.ld64_zmat_array_device, 1.0 );
+    inc_potential_syr2k( cutlass_stack.bfz_array_device,
+      cutlass_stack.xmat_z_array_device, cutlass_stack.ld64_bf_array_device,
+      cutlass_stack.ld64_zmat_array_device, 1.0 );
   }
 
   // Increment global VXC/FXC

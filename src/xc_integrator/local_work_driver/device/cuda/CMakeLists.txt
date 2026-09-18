@@ -53,5 +53,6 @@ if(GAUXC_ENABLE_CUTLASS)
       scheme1_cutlass_data_base.cxx   
 
       kernels/cutlass_wrapper.cu
+      kernels/syr2k_tiny.cu
     )
 endif()

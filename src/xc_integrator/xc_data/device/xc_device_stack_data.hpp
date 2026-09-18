@@ -345,7 +345,10 @@ struct XCDeviceStackData : public XCDeviceData {
   std::vector<size_t> task_grid_offset_;
   size_t grid_npts_ = 0;        ///< points in the batch's copy of the grid
 
-  /// A species-task list is live; the syr2k dispatch reads this.
+  /// The live batch's work ranges; empty outside the multiparticle path
+  std::vector<task_work_range> task_work_ranges_;
+
+  /// A species-task list is live.
   bool multiparticle_active_ = false;
 
   multiparticle_static_data multiparticle_static;

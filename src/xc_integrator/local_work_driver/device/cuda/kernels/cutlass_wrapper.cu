@@ -137,7 +137,12 @@ void cutlass_gemm(
 }
 
 
-void cutlass_syr2k(
+namespace {
+
+/// The grouped syr2k with the threadblock tile, the warp tile and the pipeline
+/// depth left to the caller
+template <typename ThreadblockShape, typename WarpShape, int kStages>
+void cutlass_syr2k_tiled(
   cutlass::gemm::GemmCoord* problem_sizes_device,
   cutlass::gemm::GemmCoord* problem_sizes_host,
   const int problem_count,
@@ -184,10 +189,7 @@ void cutlass_syr2k(
   using ArchTag = cutlass::arch::Sm80;
   using OperatorClass = cutlass::arch::OpClassTensorOp;
 
-  using ThreadblockShape = cutlass::gemm::GemmShape<64, 64, 16>;  // Size of  Gemm each thread block will perform
-  using WarpShape = cutlass::gemm::GemmShape<32, 32, 16>;  // Size of Gemm each warp will perform
   using InstructionShape = cutlass::gemm::GemmShape<8, 8, 4>;  // Size of DMMA Tensor Core in Ampere
-  constexpr int kStages = 4;  // Number of shared memory stages
 
   // Syr2k specific
   constexpr cutlass::FillMode kFillModeC = cutlass::FillMode::kLower;
@@ -244,6 +246,62 @@ void cutlass_syr2k(
   GAUXC_CUTLASS_ERROR("CUTLASS Group Syr2k Initialization Failed", status);
   status = gemm.run(stream);
   GAUXC_CUTLASS_ERROR("CUTLASS Group Syr2k Run Failed", status);
+}
+
+}
+
+
+void cutlass_syr2k(
+  cutlass::gemm::GemmCoord* problem_sizes_device,
+  cutlass::gemm::GemmCoord* problem_sizes_host,
+  const int problem_count,
+  double ** ptr_A,
+  double ** ptr_B,
+  double ** ptr_C,
+  double ** ptr_D,
+  int64_t* lda,
+  int64_t* ldb,
+  int64_t* ldc,
+  int64_t* ldd,
+  const double alpha,
+  const double beta,
+  device_queue queue
+) {
+  using ThreadblockShape = cutlass::gemm::GemmShape<64, 64, 16>;  // Size of  Gemm each thread block will perform
+  using WarpShape = cutlass::gemm::GemmShape<32, 32, 16>;  // Size of Gemm each warp will perform
+  constexpr int kStages = 4;  // Number of shared memory stages
+
+  cutlass_syr2k_tiled<ThreadblockShape, WarpShape, kStages>(
+    problem_sizes_device, problem_sizes_host, problem_count,
+    ptr_A, ptr_B, ptr_C, ptr_D, lda, ldb, ldc, ldd, alpha, beta, queue );
+}
+
+
+void cutlass_syr2k_32x32(
+  cutlass::gemm::GemmCoord* problem_sizes_device,
+  cutlass::gemm::GemmCoord* problem_sizes_host,
+  const int problem_count,
+  double ** ptr_A,
+  double ** ptr_B,
+  double ** ptr_C,
+  double ** ptr_D,
+  int64_t* lda,
+  int64_t* ldb,
+  int64_t* ldc,
+  int64_t* ldd,
+  const double alpha,
+  const double beta,
+  device_queue queue
+) {
+  // Two 16x32x16 warp tiles: the smallest legal Sm80 double-precision TensorOp
+  // warp shape that tiles a 32x32x16 threadblock
+  using ThreadblockShape = cutlass::gemm::GemmShape<32, 32, 16>;
+  using WarpShape = cutlass::gemm::GemmShape<16, 32, 16>;
+  constexpr int kStages = 4;  // Number of shared memory stages
+
+  cutlass_syr2k_tiled<ThreadblockShape, WarpShape, kStages>(
+    problem_sizes_device, problem_sizes_host, problem_count,
+    ptr_A, ptr_B, ptr_C, ptr_D, lda, ldb, ldc, ldd, alpha, beta, queue );
 }
 
 }

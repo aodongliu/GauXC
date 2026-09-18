@@ -64,6 +64,7 @@ device_queue XCDeviceStackData::queue() {
 void XCDeviceStackData::reset_allocations() {
   grid_npts_ = 0;
   task_grid_offset_.clear();
+  task_work_ranges_.clear();
   multiparticle_active_ = false;
   multiparticle_static.reset();
   pair_stack.reset();
@@ -1621,6 +1622,7 @@ void XCDeviceStackData::generate_buffers_multiparticle(
   grid_npts_ = batch.npts_grid;
   task_grid_offset_.assign( layout.grid_offsets.begin() + batch.first_task,
                                layout.grid_offsets.begin() + batch.last_task );
+  task_work_ranges_ = batch.task_work_ranges;
 
   // ---- 1. The batch's single copy of the grid, ahead of everything else
   buffer_adaptor mem( dynmem_ptr, dynmem_sz );

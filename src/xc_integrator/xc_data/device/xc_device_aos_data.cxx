@@ -44,7 +44,7 @@ size_t XCDeviceAoSData::get_mem_req( integrator_term_tracker terms,
     GAUXC_GENERIC_EXCEPTION("Must Populate Cou Submat Maps");
 
   // Dimensions
-  const size_t npts         = points.size();
+  const size_t npts         = task.npts;
   const size_t nbe_bfn      = task.bfn_screening.nbe;
   const size_t ncut_bfn     = submat_cut_bfn.size();
   const size_t nblock_bfn   = submat_block_bfn.size();
@@ -140,7 +140,7 @@ XCDeviceAoSData::device_buffer_t XCDeviceAoSData::allocate_dynamic_stack(
     )
       GAUXC_GENERIC_EXCEPTION("Must Populate Cou Submat Maps");
 
-    const size_t npts        = points.size();
+    const size_t npts        = it->npts;
 
     const size_t ncut_bfn    = submat_cut_bfn.size();
     const size_t nblock_bfn  = submat_block_bfn.size();
@@ -326,7 +326,7 @@ void XCDeviceAoSData::pack_and_send(
       GAUXC_GENERIC_EXCEPTION("Must Populate Cou Submat Maps");
 
     // Dimensions
-    const size_t npts         = points.size();
+    const size_t npts         = it->npts;
 
     const size_t ncut_bfn     = submat_cut_bfn.size();
     const size_t nblock_bfn   = submat_block_bfn.size();
@@ -678,6 +678,7 @@ void XCDeviceAoSData::pack_and_send(
     buffer_adaptor FXC_Bz_z_mem( base_stack.FXC_Bz_z_eval_device, total_npts);
     buffer_adaptor FXC_C_z_mem(  base_stack.FXC_C_z_eval_device,  total_npts);
 
+    size_t itask = 0;
     for( auto& task : host_device_tasks ) {
       const auto npts    = task.npts;
       const auto nbe_bfn     = task.bfn_screening.nbe;
@@ -688,7 +689,16 @@ void XCDeviceAoSData::pack_and_send(
       const auto ncut_cou    = task.cou_screening.ncut;
       const auto nblock_cou  = task.cou_screening.nblock;
 
-      // Grid points
+      // Grid points and weights; a multiparticle batch packs the grid once and
+      // every species task slices it, so the per-task walk is skipped
+      if( grid_npts_ ) {
+        const size_t grid_offset = task_grid_offset_.at(itask);
+        task.points_x = base_stack.points_x_device + grid_offset;
+        task.points_y = base_stack.points_y_device + grid_offset;
+        task.points_z = base_stack.points_z_device + grid_offset;
+        task.weights  = weights_mem.aligned_alloc<double>( npts, csl );
+      } else {
+
       if(reqt.grid_points) {
         task.points_x = points_x_mem.aligned_alloc<double>(npts, csl);
         task.points_y = points_y_mem.aligned_alloc<double>(npts, csl);
@@ -698,6 +708,8 @@ void XCDeviceAoSData::pack_and_send(
       // Grid weights
       task.weights = weights_mem.aligned_alloc<double>(
         reqt.grid_weights_size(npts), csl); 
+
+      }
 
       // Shell indexing (bfn)
       task.bfn_screening.submat_cut = 
@@ -1069,6 +1081,8 @@ void XCDeviceAoSData::pack_and_send(
             task.FXC_C_z = FXC_C_z_mem.aligned_alloc<double>( npts, csl );
         }
       }
+
+      itask++;
 
     } // Loop over device tasks
 

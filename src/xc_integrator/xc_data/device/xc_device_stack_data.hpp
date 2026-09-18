@@ -310,6 +310,47 @@ struct XCDeviceStackData : public XCDeviceData {
 
   base_stack_data base_stack;
 
+
+  // Multiparticle (NEO) support. A batch holds one copy of the grid, sliced by
+  // every species task of a grid task, and per-point arrays over the batch's
+  // species tasks in list order. Every member below is at its default outside
+  // the multiparticle path.
+
+  /// The energy accumulators of one call, carved once and read back at the end
+  struct multiparticle_static_data {
+    double* intra_exc_device = nullptr; ///< one intra XC energy per species
+    inline void reset() { std::memset(this,0,sizeof(multiparticle_static_data)); }
+  };
+
+  size_t nspecies_ = 0;   ///< species of the call: one intra energy accumulator each
+
+  /// The batch's grid arrays are allocated and packed by the multiparticle
+  /// path; the per-task sizing, carving and packing skip them.
+  bool shared_grid_ = false;
+
+  /// Per species task of the live batch, where its grid task starts in the
+  /// batch's one copy of the grid. Empty outside the multiparticle path.
+  std::vector<size_t> task_grid_offset_;
+  size_t grid_npts_ = 0;        ///< points in the batch's copy of the grid
+
+  /// A species-task list is live; the syr2k dispatch reads this.
+  bool multiparticle_active_ = false;
+
+  multiparticle_static_data multiparticle_static;
+
+  void build_species_tasks( integrator_term_tracker terms,
+    const multiparticle_tracker& tracker,
+    const std::vector<species_basis_range>& species_basis_ranges,
+    const BasisSetMap& basis_map,
+    host_task_iterator task_begin, host_task_iterator task_end,
+    multiparticle_layout& layout ) override final;
+  void generate_buffers_multiparticle( integrator_term_tracker terms,
+    const BasisSetMap& basis_map, multiparticle_layout& layout,
+    size_t ibatch ) override final;
+  void allocate_static_data_multiparticle( size_t nspecies ) override final;
+  void retrieve_intra_exc( double* intra_EXC, size_t nspecies ) override final;
+  double* intra_exc_device_data( size_t species ) override final;
+
   /// Device backend instance to handle device specific execution
   const DeviceRuntimeEnvironment& runtime_;
   DeviceBackend* device_backend_ = nullptr;

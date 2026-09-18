@@ -11,7 +11,10 @@
  */
 #include "xc_device_stack_data.hpp"
 #include "buffer_adaptor.hpp"
+#include "device/common/syr2k_size_classes.hpp"
 #include <gauxc/runtime_environment.hpp>
+
+#include <algorithm>
 
 namespace GauXC {
 
@@ -59,6 +62,10 @@ device_queue XCDeviceStackData::queue() {
 
 
 void XCDeviceStackData::reset_allocations() {
+  grid_npts_ = 0;
+  task_grid_offset_.clear();
+  multiparticle_active_ = false;
+  multiparticle_static.reset();
   dynmem_ptr = device_ptr;
   dynmem_sz  = devmem_sz;
   allocated_terms.reset();
@@ -759,11 +766,16 @@ size_t XCDeviceStackData::get_mem_req(
   const host_task_type& task
 ) {
 
-  const auto& points = task.points;
-  const size_t npts  = points.size();
+  const size_t npts  = task.npts;
 
   required_term_storage reqt(terms);
-  
+
+  // The multiparticle batch's grid is allocated and packed once by the caller
+  if( shared_grid_ ) {
+    reqt.grid_points  = false;
+    reqt.grid_weights = false;
+  }
+
   size_t mem_req = 
     // Grid
     reqt.grid_points_size (npts)  * sizeof(double) + 
@@ -830,7 +842,7 @@ XCDeviceStackData::device_buffer_t XCDeviceStackData::allocate_dynamic_stack(
 
   // Get total npts
   total_npts_task_batch = std::accumulate( task_begin, task_end, 0ul,
-    [](const auto& a, const auto& b){ return a + b.points.size(); } );
+    [](const auto& a, const auto& b){ return a + size_t(b.npts); } );
 
   // Allocate device memory
   auto [ ptr, sz ] = buf;
@@ -838,6 +850,13 @@ XCDeviceStackData::device_buffer_t XCDeviceStackData::allocate_dynamic_stack(
 
 
   required_term_storage reqt(terms);
+
+  // The multiparticle batch's grid is allocated by the caller, once.
+  if( shared_grid_ ) {
+    reqt.grid_points  = false;
+    reqt.grid_weights = false;
+  }
+
   const size_t msz = total_npts_task_batch;
   const size_t aln = 256;
   
@@ -1192,6 +1211,12 @@ void XCDeviceStackData::pack_and_send( integrator_term_tracker terms,
 
   if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
 
+  // The multiparticle batch's grid is packed by the caller, once
+  if( shared_grid_ ) {
+    device_backend_->master_queue_synchronize();
+    return;
+  }
+
   // Host data packing arrays
   std::vector<double> points_x_pack, points_y_pack, points_z_pack;
   std::vector< double > weights_pack;
@@ -1275,6 +1300,360 @@ void XCDeviceStackData::copy_weights_to_tasks( host_task_iterator task_begin, ho
     weights_ptr += npts;
   }
 
+}
+
+
+
+
+/******************************************************************************
+ *                        The multiparticle XCtask list                       *
+
+ In multiparticle (NEO) framework, each grid tasks now carry a list of screened basis.
+
+ New idea introduced: Species task, which is grid task for specific species. 
+ For example: (0, e):  grid task 0, electron 
+              (0, p1): grid task 0, proton 1
+              (1, p2): grid task 1, proton 2
+
+In this function, we do the following:
+
+Step 1. Build species tasks 
+        Here we expand the grid task, and build XCTasks for each species of a grid task (which we call species task here). 
+        Note we use a oncatenated shell list for all species tasks.
+
+Step 2. Compute device memory for species tasks (they share the same grid)
+
+Step 3. Partition tasks into batches. Add to a batch until an entire grid task cannot fit. Species tasks on the same grid are not split
+
+Step 4. Re-order species tasks within a batch to put species with intra functional first (currently just electrons), then the rest
+       (for contiguous memory access during functional evaluation and VXC syr2k launch grid)
+
+ ******************************************************************************/
+
+void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
+  const multiparticle_tracker& tracker,
+  const std::vector<species_basis_range>& species_basis_ranges,
+  const BasisSetMap& basis_map,
+  host_task_iterator task_begin, host_task_iterator task_end,
+  multiparticle_layout& layout ) {
+
+  const size_t nspecies = tracker.nspecies();
+  if( species_basis_ranges.size() != nspecies )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: one basis range per species is required");
+
+  // For different sizes of syr2k dispatch. See Step 4
+  multiparticle_active_ = true;
+
+  layout.species_tasks.clear();
+  layout.grid_offsets.clear();
+  layout.point_offsets.clear();
+  layout.species_indices.clear();
+  layout.batches.clear();
+
+  // Form an order for species that participates 
+  // the species carrying an intra functional first, then the rest
+  std::vector<size_t> intra_species, species_order;
+  for( size_t species = 0; species < nspecies; ++species )
+    if( tracker.species[species].participates and tracker.species[species].has_intra_functional )
+      intra_species.push_back( species );
+  species_order = intra_species;
+  for( size_t species = 0; species < nspecies; ++species )
+    if( tracker.species[species].participates and not tracker.species[species].has_intra_functional )
+      species_order.push_back( species );
+  if( species_order.empty() )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: no participating species");
+
+  const size_t ngrid_tasks = std::distance( task_begin, task_end );
+
+  // ---- 1. Build species task per (grid task, species) with a non-empty shell list, 
+  //         with its shells shifted into the union basis
+  std::vector<XCTask> species_tasks;            // every species task, in grid-task order
+  std::vector<size_t> species_indices;          // per species task, its species
+  std::vector<size_t> grid_task_offset;         // per grid task, its first species task
+  std::vector<size_t> grid_task_species_count;  // per grid task, how many species tasks it has
+  species_tasks.reserve( ngrid_tasks * species_order.size() );
+  grid_task_offset.reserve( ngrid_tasks );
+  grid_task_species_count.reserve( ngrid_tasks );
+
+  for( auto grid_task = task_begin; grid_task != task_end; ++grid_task ) {
+    grid_task_offset.push_back( species_tasks.size() );
+    size_t ntasks = 0;
+    for( auto species : species_order ) {
+      const auto& screening = grid_task->basis_screening( species );
+      if( screening.nbe <= 0 ) continue;
+      // Build a species task by taking the same grid information from a grid task
+      XCTask species_task;
+      species_task.iParent       = grid_task->iParent;
+      species_task.npts          = static_cast<int32_t>( grid_task->points.size() );
+      species_task.dist_nearest  = grid_task->dist_nearest;
+      species_task.max_weight    = grid_task->max_weight;
+      // Use this species' own screening
+      species_task.bfn_screening = screening;
+      // Update the shell list to use the union basis's numbering
+      for( auto& shell : species_task.bfn_screening.shell_list )
+        shell += species_basis_ranges[species].shell_offset;
+      species_tasks.push_back( std::move(species_task) );
+      species_indices.push_back( species );
+      ntasks++;
+    }
+    grid_task_species_count.push_back( ntasks );
+  }
+
+  // Submatrix maps against the union basis
+  populate_submat_maps( global_dims.nbf, species_tasks.begin(), species_tasks.end(), basis_map );
+
+  // ---- 2. Device memory of one species task, its grid excluded: the batch
+  //         holds one copy of the grid per grid task, counted in step 3
+  const bool shared_grid_on_entry = shared_grid_;
+  shared_grid_ = true;
+  std::vector<size_t> task_bytes( species_tasks.size() );
+  for( size_t task = 0; task < species_tasks.size(); ++task )
+    task_bytes[task] = get_mem_req( terms, species_tasks[task] )
+      + sizeof(double) * size_t( species_tasks[task].npts );  // its weights
+  shared_grid_ = shared_grid_on_entry;
+
+  // ---- 3. Greedy batch partition over whole grid tasks, as generate_buffers
+  //         partitions over tasks
+  if( get_static_mem_requirement() > dynmem_sz )
+    GAUXC_GENERIC_EXCEPTION("Insufficient memory to even start!");
+  const size_t bytes_available = dynmem_sz - get_static_mem_requirement();
+
+  // Per grid task: one copy of its coordinates, its species tasks, and slack
+  // for the allocator's alignment
+  constexpr size_t grid_bytes_per_point          = 3 * sizeof(double);
+  constexpr size_t alignment_slack_bytes = 32 * 256;
+
+  std::vector<size_t> grid_task_bytes( ngrid_tasks, 0 );
+  {
+    size_t igrid_task = 0;
+    for( auto grid_task = task_begin; grid_task != task_end; ++grid_task, ++igrid_task ) {
+      size_t bytes = grid_bytes_per_point * grid_task->points.size();
+      for( size_t k = 0; k < grid_task_species_count[igrid_task]; ++k )
+        bytes += task_bytes[ grid_task_offset[igrid_task] + k ];
+      grid_task_bytes[igrid_task] = bytes + alignment_slack_bytes;
+    }
+  }
+
+  std::vector<std::pair<size_t,size_t>> grid_task_batches;  // [first, last) grid task of each batch
+  {
+    size_t igrid_task = 0;
+    while( igrid_task < ngrid_tasks ) {
+      size_t bytes_left = bytes_available;
+      const size_t first = igrid_task;
+      while( igrid_task < ngrid_tasks and grid_task_bytes[igrid_task] <= bytes_left ) {
+        bytes_left -= grid_task_bytes[igrid_task];
+        igrid_task++;
+      }
+      if( igrid_task == first )
+        GAUXC_GENERIC_EXCEPTION("Insufficient device memory for a single multiparticle grid task");
+      grid_task_batches.emplace_back( first, igrid_task );
+    }
+  }
+
+  // ---- 4. Re-order the species tasks within each batch: 
+  //         each intra species first, then the rest, each in work ranges of one syr2k size class
+  //         (for contiguous memory access during functional evaluation and VXC syr2k launch grid)
+  layout.species_tasks.reserve( species_tasks.size() );
+  layout.grid_offsets.reserve( species_tasks.size() );
+  layout.point_offsets.reserve( species_tasks.size() );
+  layout.species_indices.reserve( species_tasks.size() );
+
+  //  TINY    syr2k_tiny
+  //  SMALL   cutlass_syr2k_32x32 (threadblock 32x32x16)
+  //  GENERAL cutlass_syr2k       (threadblock 64x64x16)
+  const syr2k_size_class size_classes[syr2k_size_class_count] = {
+    syr2k_size_class::TINY, syr2k_size_class::SMALL, syr2k_size_class::GENERAL };
+
+  for( const auto& grid_task_batch : grid_task_batches ) {
+    const size_t first_grid_task = grid_task_batch.first;
+    const size_t last_grid_task  = grid_task_batch.second;
+
+    multiparticle_batch batch;
+    batch.first_task      = layout.species_tasks.size();
+    batch.grid_task_begin = task_begin + first_grid_task;
+    batch.grid_task_end   = task_begin + last_grid_task;
+
+    // Where each grid task starts in the batch's one copy of the grid
+    std::vector<size_t> grid_task_point_offset( last_grid_task - first_grid_task );
+    {
+      size_t offset = 0, igrid_in_batch = 0;
+      for( auto grid_task = batch.grid_task_begin; grid_task != batch.grid_task_end; ++grid_task, ++igrid_in_batch ) {
+        grid_task_point_offset[igrid_in_batch] = offset;
+        offset += grid_task->points.size();
+      }
+      batch.npts_grid = offset;
+    }
+
+    // In a batch of grid tasks, group species tasks that belongs to `species` and whose nbe is in `size_class`, 
+    // and record that run as one work range. 
+    // `species == nspecies` selects every species without an intra functional.
+    size_t npts = 0;   // points appended so far: the next task's point offset
+    auto add_work_range = [&]( size_t species, syr2k_size_class size_class ) {
+      const size_t range_first = layout.species_tasks.size() - batch.first_task;
+      int32_t nbe_max = 0;
+      size_t  igrid_in_batch   = 0;
+      for( size_t igrid_task = first_grid_task; igrid_task < last_grid_task; ++igrid_task, ++igrid_in_batch ) {
+        for( size_t k = 0; k < grid_task_species_count[igrid_task]; ++k ) {
+          const size_t task          = grid_task_offset[igrid_task] + k;
+          const size_t species_index = species_indices[task];
+          const bool   selected      = species == nspecies ? 
+                                       not tracker.species[species_index].has_intra_functional : species_index == species;
+          if( not selected ) continue;
+          const int32_t nbe = species_tasks[task].bfn_screening.nbe;
+          if( syr2k_size_class_of(nbe) != size_class ) continue;
+          nbe_max = std::max( nbe_max, nbe );
+          layout.grid_offsets.push_back( grid_task_point_offset[igrid_in_batch] );
+          layout.point_offsets.push_back( npts );
+          layout.species_indices.push_back( static_cast<uint32_t>(species_index) );
+          npts += size_t( species_tasks[task].npts );
+          layout.species_tasks.push_back( std::move(species_tasks[task]) );
+        }
+      }
+      const size_t range_count = layout.species_tasks.size() - batch.first_task - range_first;
+      if( range_count )
+        batch.task_work_ranges.push_back( { range_first, range_count, nbe_max } );
+    };
+
+    batch.intra_point_ranges.assign( nspecies, point_work_range{} );
+    // Add possibly 3 size_classes (tiny, small, general) for each intra species (currently electronic only)
+    for( size_t species : intra_species ) {
+      const size_t first_point = npts;
+      for( auto size_class : size_classes ) add_work_range( species, size_class );
+      batch.intra_point_ranges[species] = point_work_range{ first_point, npts - first_point };
+    }
+    batch.npts_intra = npts;
+    // Add possibly 3 size_classes (tiny, small, general) for all other species
+    for( auto size_class : size_classes ) add_work_range( nspecies, size_class );
+
+    batch.last_task  = layout.species_tasks.size();
+    batch.npts_total = npts;
+    layout.batches.push_back( std::move(batch) );
+  }
+
+  // The species tasks carry no points of their own; the batch packs the grid once
+  for( auto& species_task : layout.species_tasks ) {
+    species_task.points.clear();  species_task.points.shrink_to_fit();
+    species_task.weights.clear(); species_task.weights.shrink_to_fit();
+  }
+}
+
+
+void XCDeviceStackData::generate_buffers_multiparticle(
+  integrator_term_tracker terms, const BasisSetMap& basis_map,
+  multiparticle_layout& layout, size_t ibatch ) {
+
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+
+  auto& batch = layout.batches.at(ibatch);
+  auto batch_tasks_begin = layout.species_tasks.begin() + batch.first_task;
+  auto batch_tasks_end   = layout.species_tasks.begin() + batch.last_task;
+
+  grid_npts_ = batch.npts_grid;
+  task_grid_offset_.assign( layout.grid_offsets.begin() + batch.first_task,
+                               layout.grid_offsets.begin() + batch.last_task );
+
+  // ---- 1. The batch's single copy of the grid, ahead of everything else
+  buffer_adaptor mem( dynmem_ptr, dynmem_sz );
+  base_stack.points_x_device = mem.aligned_alloc<double>( batch.npts_grid, 256, csl );
+  base_stack.points_y_device = mem.aligned_alloc<double>( batch.npts_grid, 256, csl );
+  base_stack.points_z_device = mem.aligned_alloc<double>( batch.npts_grid, 256, csl );
+  // The weights are per species-task point: scale_*_output, inc_exc and
+  // inc_nel read one array over the batch's species tasks
+  base_stack.weights_device  = mem.aligned_alloc<double>( batch.npts_total, 256, csl );
+
+  // ---- 2. Everything else is sized by the species-task list, through the
+  //         per-task allocator with the grid excluded
+  const bool shared_grid_on_entry = shared_grid_;
+  shared_grid_ = true;
+  allocate_dynamic_stack( terms, batch_tasks_begin, batch_tasks_end,
+    device_buffer_t{ mem.stack(), mem.nleft() } );
+
+  // vrho and vgamma start at zero: the intra XC writes its own species' points only
+  {
+    const size_t npts = total_npts_task_batch;
+    auto zero = [&]( double* array, const char* msg ) {
+      if( array ) device_backend_->set_zero_async_master_queue( npts, array, msg );
+    };
+    if( terms.ks_scheme == RKS ) {
+      zero( base_stack.vrho_eval_device, "MultiParticle vrho Zero" );
+      if( terms.xc_approx == GGA )
+        zero( base_stack.vgamma_eval_device, "MultiParticle vgamma Zero" );
+    } else {
+      zero( base_stack.vrho_pos_eval_device, "MultiParticle vrho+ Zero" );
+      zero( base_stack.vrho_neg_eval_device, "MultiParticle vrho- Zero" );
+      if( terms.xc_approx == GGA ) {
+        zero( base_stack.vgamma_pp_eval_device, "MultiParticle vgamma++ Zero" );
+        zero( base_stack.vgamma_pm_eval_device, "MultiParticle vgamma+- Zero" );
+        zero( base_stack.vgamma_mm_eval_device, "MultiParticle vgamma-- Zero" );
+      }
+    }
+  }
+
+  // ---- 3. Pack: the grid once from the grid tasks, here; the species tasks
+  //         through the per-task packer, which skips the grid
+  {
+    std::vector<double> points_x, points_y, points_z, grid_weights, weights;
+    points_x.reserve( batch.npts_grid );
+    points_y.reserve( batch.npts_grid );
+    points_z.reserve( batch.npts_grid );
+    grid_weights.reserve( batch.npts_grid );
+    weights.reserve( batch.npts_total );
+    for( auto grid_task = batch.grid_task_begin; grid_task != batch.grid_task_end; ++grid_task ) {
+      for( const auto& point : grid_task->points ) {
+        points_x.push_back( point[0] );
+        points_y.push_back( point[1] );
+        points_z.push_back( point[2] );
+      }
+      grid_weights.insert( grid_weights.end(), grid_task->weights.begin(), grid_task->weights.end() );
+    }
+    // Each species task repeats its grid task's weights
+    for( size_t task = batch.first_task; task < batch.last_task; ++task ) {
+      const size_t grid_offset = layout.grid_offsets[task];
+      const size_t npts        = size_t( layout.species_tasks[task].npts );
+      weights.insert( weights.end(), grid_weights.begin() + grid_offset,
+        grid_weights.begin() + grid_offset + npts );
+    }
+    if( points_x.size() != batch.npts_grid or weights.size() != batch.npts_total )
+      GAUXC_GENERIC_EXCEPTION("MultiParticle: inconsistent grid allocation");
+    device_backend_->copy_async( batch.npts_grid,  points_x.data(), base_stack.points_x_device, "multiparticle points_x" );
+    device_backend_->copy_async( batch.npts_grid,  points_y.data(), base_stack.points_y_device, "multiparticle points_y" );
+    device_backend_->copy_async( batch.npts_grid,  points_z.data(), base_stack.points_z_device, "multiparticle points_z" );
+    device_backend_->copy_async( batch.npts_total, weights.data(),  base_stack.weights_device,  "multiparticle weights"  );
+    device_backend_->master_queue_synchronize();
+  }
+
+  pack_and_send( terms, batch_tasks_begin, batch_tasks_end, basis_map );
+  shared_grid_ = shared_grid_on_entry;
+}
+
+
+void XCDeviceStackData::allocate_static_data_multiparticle( size_t nspecies ) {
+
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+
+  nspecies_ = nspecies;
+  buffer_adaptor mem( dynmem_ptr, dynmem_sz );
+  multiparticle_static.intra_exc_device = mem.aligned_alloc<double>( nspecies, csl );
+  dynmem_ptr = mem.stack();
+  dynmem_sz  = mem.nleft();
+
+  device_backend_->set_zero( nspecies, multiparticle_static.intra_exc_device, "MultiParticle intra EXC Zero" );
+}
+
+
+void XCDeviceStackData::retrieve_intra_exc( double* intra_EXC, size_t nspecies ) {
+
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+  if( not multiparticle_static.intra_exc_device )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: intra EXC accumulator not allocated");
+  device_backend_->copy_async( nspecies, multiparticle_static.intra_exc_device,
+    intra_EXC, "MultiParticle intra EXC D2H" );
+  device_backend_->master_queue_synchronize();
+}
+
+
+double* XCDeviceStackData::intra_exc_device_data( size_t species ) {
+  return multiparticle_static.intra_exc_device + species;
 }
 
 

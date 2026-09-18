@@ -83,6 +83,21 @@ void LocalDeviceWorkDriver::NAME( XCDeviceData* device_data, integrator_ks_schem
   throw_if_invalid_pimpl(pimpl_);                               \
   pimpl_->NAME(device_data, track, b, den);                               \
 }
+#define FWD_TO_PIMPL_RANGE(NAME) \
+void LocalDeviceWorkDriver::NAME( XCDeviceData* device_data, point_work_range range ) { \
+  throw_if_invalid_pimpl(pimpl_);                               \
+  pimpl_->NAME(device_data, range);                               \
+}
+#define FWD_TO_PIMPL_DEN_ID_RANGE(NAME) \
+void LocalDeviceWorkDriver::NAME( XCDeviceData* device_data, density_id den, task_work_range range ) { \
+  throw_if_invalid_pimpl(pimpl_);                               \
+  pimpl_->NAME(device_data, den, range);                               \
+}
+#define FWD_TO_PIMPL_KS_SCHEME_DEN_ID_RANGE(NAME) \
+void LocalDeviceWorkDriver::NAME( XCDeviceData* device_data, integrator_ks_scheme track, density_id den, task_work_range range ) { \
+  throw_if_invalid_pimpl(pimpl_);                               \
+  pimpl_->NAME(device_data, track, den, range);                               \
+}
 
 FWD_TO_PIMPL(partition_weights)         // Partition weights
 
@@ -96,8 +111,8 @@ FWD_TO_PIMPL(eval_collocation_lapgrad)  // Collocation Laplacian gradient
 FWD_TO_PIMPL_KS_SCHEME(eval_uvars_lda)            // U variables LDA (rho)
 FWD_TO_PIMPL_KS_SCHEME(eval_uvars_gga)            // U variables GGA (gamma)
 FWD_TO_PIMPL_KS_SCHEME_BOOL(eval_uvars_mgga)      // U variables MGGA (tau, lapl)
-FWD_TO_PIMPL_DEN_ID(eval_vvars_lda)               // V variables LDA (density)
-FWD_TO_PIMPL_DEN_ID(eval_vvars_gga)               // V variables GGA (density + grad)
+FWD_TO_PIMPL_DEN_ID_RANGE(eval_vvars_lda)          // V variables LDA (density), per work range
+FWD_TO_PIMPL_DEN_ID_RANGE(eval_vvars_gga)          // V variables GGA (density + grad), per work range
 FWD_TO_PIMPL_DEN_ID_BOOL(eval_vvars_mgga)         // V variables MGGA (density + grad + tau + lapl)
 
 FWD_TO_PIMPL_KS_SCHEME(eval_tmat_lda)            // T variables LDA (trho)
@@ -107,8 +122,8 @@ FWD_TO_PIMPL_DEN_ID(eval_vvars_lda_trial)               // V variables LDA (tria
 FWD_TO_PIMPL_DEN_ID(eval_vvars_gga_trial)               // V variables GGA (trial density + grad)
 FWD_TO_PIMPL_DEN_ID_BOOL(eval_vvars_mgga_trial)         // V variables MGGA (trial density + grad + tau + lapl)
 
-FWD_TO_PIMPL_KS_SCHEME_DEN_ID(eval_zmat_lda_vxc)         // Eval Z Matrix LDA VXC
-FWD_TO_PIMPL_KS_SCHEME_DEN_ID(eval_zmat_gga_vxc)         // Eval Z Matrix GGA VXC
+FWD_TO_PIMPL_KS_SCHEME_DEN_ID_RANGE(eval_zmat_lda_vxc)    // Eval Z Matrix LDA VXC, per work range
+FWD_TO_PIMPL_KS_SCHEME_DEN_ID_RANGE(eval_zmat_gga_vxc)    // Eval Z Matrix GGA VXC, per work range
 FWD_TO_PIMPL_KS_SCHEME_BOOL_DEN_ID(eval_zmat_mgga_vxc)   // Eval Z Matrix mGGA VXC
 FWD_TO_PIMPL_KS_SCHEME_BOOL_DEN_ID(eval_mmat_mgga_vxc)   // Eval M Matrix mGGA VXC
 
@@ -122,8 +137,13 @@ FWD_TO_PIMPL(eval_exx_fmat)             // Eval EXX F Matrix
 //FWD_TO_PIMPL(eval_exx_gmat)           // Eval EXX G Matrix
 
 
-FWD_TO_PIMPL(inc_exc)
-FWD_TO_PIMPL(inc_nel)
+void LocalDeviceWorkDriver::inc_exc( XCDeviceData* data, point_work_range range,
+  double* accumulator ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->inc_exc(data, range, accumulator);
+}
+
+FWD_TO_PIMPL_RANGE(inc_nel)                   // Increment N_EL over a point work range
 FWD_TO_PIMPL_DEN_ID_BOOL(inc_vxc)            // Increment VXC_I by Z
 FWD_TO_PIMPL_DEN_ID_BOOL(inc_fxc)            // Increment FXC_I by Z
 
@@ -160,15 +180,15 @@ void LocalDeviceWorkDriver::eval_exx_gmat( XCDeviceData* device_data,
 }
 
 void LocalDeviceWorkDriver::eval_kern_exc_vxc_lda( const functional_type& func,
-  XCDeviceData* data) {
+  XCDeviceData* data, point_work_range range ) {
   throw_if_invalid_pimpl(pimpl_);
-  pimpl_->eval_kern_exc_vxc_lda(func,data);
+  pimpl_->eval_kern_exc_vxc_lda(func,data,range);
 }
 
 void LocalDeviceWorkDriver::eval_kern_exc_vxc_gga( const functional_type& func,
-  XCDeviceData* data) {
+  XCDeviceData* data, point_work_range range ) {
   throw_if_invalid_pimpl(pimpl_);
-  pimpl_->eval_kern_exc_vxc_gga(func,data);
+  pimpl_->eval_kern_exc_vxc_gga(func,data,range);
 }
 
 void LocalDeviceWorkDriver::eval_kern_exc_vxc_mgga( const functional_type& func,

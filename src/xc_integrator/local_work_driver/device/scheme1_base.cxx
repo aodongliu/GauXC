@@ -247,46 +247,52 @@ AoSScheme1Base::~AoSScheme1Base() noexcept {
 #endif
 }
 
-void AoSScheme1Base::eval_zmat_lda_vxc( XCDeviceData* _data, integrator_ks_scheme scheme, density_id den ) {
+void AoSScheme1Base::eval_zmat_lda_vxc( XCDeviceData* _data, integrator_ks_scheme scheme, density_id den,
+  task_work_range range ) {
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
   if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
 
+  // One launch per work range; the grid is sized by the range's largest nbe
   auto& tasks = data->host_device_tasks;
-  const auto ntasks = tasks.size();
+  const size_t task_first = range.first;
+  const size_t ntasks     = range.count ? range.count : tasks.size() - task_first;
   size_t nbe_max = 0, npts_max = 0;
-  for( auto& task : tasks ) {
-    nbe_max  = std::max( nbe_max, task.bfn_screening.nbe );
-    npts_max = std::max( npts_max, task.npts );
+  for( size_t i = task_first; i < task_first + ntasks; ++i ) {
+    nbe_max  = std::max( nbe_max, tasks[i].bfn_screening.nbe );
+    npts_max = std::max( npts_max, tasks[i].npts );
   }
 
   auto aos_stack     = data->aos_stack;
-  zmat_lda_vxc( ntasks, nbe_max, npts_max, aos_stack.device_tasks, scheme, den,
-    data->device_backend_->queue() );
+  zmat_lda_vxc( ntasks, nbe_max, npts_max, aos_stack.device_tasks + task_first,
+    scheme, den, data->device_backend_->queue() );
 
   data->device_backend_->check_error("zmat_lda" __FILE__ ": " + std::to_string(__LINE__));
 }
 
-void AoSScheme1Base::eval_zmat_gga_vxc( XCDeviceData* _data, integrator_ks_scheme scheme, density_id den ) {
+void AoSScheme1Base::eval_zmat_gga_vxc( XCDeviceData* _data, integrator_ks_scheme scheme, density_id den,
+  task_work_range range ) {
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
   if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
 
+  // One launch per work range; the grid is sized by the range's largest nbe
   auto& tasks = data->host_device_tasks;
-  const auto ntasks = tasks.size();
+  const size_t task_first = range.first;
+  const size_t ntasks     = range.count ? range.count : tasks.size() - task_first;
   size_t nbe_max = 0, npts_max = 0;
-  for( auto& task : tasks ) {
-    nbe_max  = std::max( nbe_max, task.bfn_screening.nbe );
-    npts_max = std::max( npts_max, task.npts );
+  for( size_t i = task_first; i < task_first + ntasks; ++i ) {
+    nbe_max  = std::max( nbe_max, tasks[i].bfn_screening.nbe );
+    npts_max = std::max( npts_max, tasks[i].npts );
   }
 
   auto aos_stack     = data->aos_stack;
-  zmat_gga_vxc( ntasks, nbe_max, npts_max, aos_stack.device_tasks, scheme, den,
-    data->device_backend_->queue() );
+  zmat_gga_vxc( ntasks, nbe_max, npts_max, aos_stack.device_tasks + task_first,
+    scheme, den, data->device_backend_->queue() );
 
   data->device_backend_->check_error("zmat_gga" __FILE__ ": " + std::to_string(__LINE__));
 }
@@ -555,7 +561,33 @@ void AoSScheme1Base::eval_collocation_lapgrad( XCDeviceData* _data ) {
 
 
 
-void AoSScheme1Base::inc_exc( XCDeviceData* _data ){
+// Advance a copy of the batch's per-point pointers to point `offset`, each by its
+// own stride: the interleaved density is (rho_a, rho_b) per point, the
+// interleaved gamma and vgamma are (++, +-, --).
+template <typename T>
+void advance_exc_vxc_points( T& stack, size_t offset ) {
+  if( not offset ) return;
+  auto adv = []( double*& p, size_t n ) { if( p ) p += n; };
+  adv( stack.weights_device,         offset );
+  adv( stack.den_s_eval_device,      offset );
+  adv( stack.den_z_eval_device,      offset );
+  adv( stack.den_interleaved_device, 2*offset );
+  adv( stack.eps_eval_device,        offset );
+  adv( stack.vrho_eval_device,       2*offset );
+  adv( stack.vrho_pos_eval_device,   offset );
+  adv( stack.vrho_neg_eval_device,   offset );
+  adv( stack.gamma_pp_eval_device,   offset );
+  adv( stack.gamma_pm_eval_device,   offset );
+  adv( stack.gamma_mm_eval_device,   offset );
+  adv( stack.gamma_eval_device,      3*offset );
+  adv( stack.vgamma_eval_device,     3*offset );
+  adv( stack.vgamma_pp_eval_device,  offset );
+  adv( stack.vgamma_pm_eval_device,  offset );
+  adv( stack.vgamma_mm_eval_device,  offset );
+}
+
+void AoSScheme1Base::inc_exc( XCDeviceData* _data, point_work_range range,
+  double* accumulator ){
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
@@ -563,25 +595,31 @@ void AoSScheme1Base::inc_exc( XCDeviceData* _data ){
   if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
 
   auto base_stack    = data->base_stack;
+  advance_exc_vxc_points( base_stack, range.first );
   auto static_stack  = data->static_stack;
   const bool is_RKS  = data->allocated_terms.ks_scheme == RKS;
   const bool is_UKS  = data->allocated_terms.ks_scheme == UKS;
   const bool is_GKS  = data->allocated_terms.ks_scheme == GKS;
   const bool is_pol  = is_UKS or is_GKS;
-  
-  gdot( data->device_backend_->master_blas_handle(), data->total_npts_task_batch,
+
+  const size_t npts = range.count ? range.count
+                                 : data->total_npts_task_batch - range.first;
+  // `accumulator`: where to add; the call's own accumulator by default
+  double* exc = accumulator ? accumulator : static_stack.exc_device;
+
+  gdot( data->device_backend_->master_blas_handle(), npts,
     base_stack.eps_eval_device, 1, base_stack.den_s_eval_device, 1, 
-    static_stack.acc_scr_device, static_stack.exc_device );
+    static_stack.acc_scr_device, exc );
 
   if( is_pol ) {
-    gdot( data->device_backend_->master_blas_handle(), data->total_npts_task_batch,
+    gdot( data->device_backend_->master_blas_handle(), npts,
       base_stack.eps_eval_device, 1, base_stack.den_z_eval_device, 1, 
-      static_stack.acc_scr_device, static_stack.exc_device );
+      static_stack.acc_scr_device, exc );
   }
   
   data->device_backend_->check_error("inc exc" __FILE__ ": " + std::to_string(__LINE__));
 }
-void AoSScheme1Base::inc_nel( XCDeviceData* _data ){
+void AoSScheme1Base::inc_nel( XCDeviceData* _data, point_work_range range ){
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
@@ -589,19 +627,23 @@ void AoSScheme1Base::inc_nel( XCDeviceData* _data ){
   if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
 
   auto base_stack    = data->base_stack;
+  advance_exc_vxc_points( base_stack, range.first );
   auto static_stack  = data->static_stack;
 
   const bool is_RKS  = data->allocated_terms.ks_scheme == RKS;
   const bool is_UKS  = data->allocated_terms.ks_scheme == UKS;
   const bool is_GKS  = data->allocated_terms.ks_scheme == GKS;
   const bool is_pol  = is_UKS or is_GKS;
-  
-  gdot( data->device_backend_->master_blas_handle(), data->total_npts_task_batch,
+
+  const size_t npts = range.count ? range.count
+                                 : data->total_npts_task_batch - range.first;
+
+  gdot( data->device_backend_->master_blas_handle(), npts,
     base_stack.weights_device, 1, base_stack.den_s_eval_device, 1, 
     static_stack.acc_scr_device, static_stack.nel_device );
 
   if( is_pol ) {
-    gdot( data->device_backend_->master_blas_handle(), data->total_npts_task_batch,
+    gdot( data->device_backend_->master_blas_handle(), npts,
       base_stack.weights_device, 1, base_stack.den_z_eval_device, 1, 
       static_stack.acc_scr_device, static_stack.nel_device );
   }
@@ -683,18 +725,21 @@ void AoSScheme1Base::eval_uvars_mgga( XCDeviceData* _data, integrator_ks_scheme 
   data->device_backend_->check_error("uvvar mgga" __FILE__ ": " + std::to_string(__LINE__));
 }
 
-void AoSScheme1Base::eval_vvars_lda( XCDeviceData* _data, density_id den_select){
+void AoSScheme1Base::eval_vvars_lda( XCDeviceData* _data, density_id den_select,
+  task_work_range range ){
   auto* data = dynamic_cast<Data*>(_data);
   if ( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
   if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
 
+  // One launch per work range; the grid is sized by the range's largest nbe
   auto& tasks = data->host_device_tasks;
-  const auto ntasks = tasks.size();
+  const size_t task_first = range.first;
+  const size_t ntasks     = range.count ? range.count : tasks.size() - task_first;
   size_t nbe_max = 0, npts_max = 0;
-  for( auto& task : tasks ) {
-    nbe_max  = std::max( nbe_max, task.bfn_screening.nbe );
-    npts_max = std::max( npts_max, task.npts );
+  for( size_t i = task_first; i < task_first + ntasks; ++i ) {
+    nbe_max  = std::max( nbe_max, tasks[i].bfn_screening.nbe );
+    npts_max = std::max( npts_max, tasks[i].npts );
   }
 
   // Zero density
@@ -717,27 +762,32 @@ void AoSScheme1Base::eval_vvars_lda( XCDeviceData* _data, density_id den_select)
       GAUXC_GENERIC_EXCEPTION( "eval_vvars_lda called with invalid density selected!" );
   }
 
-  data->device_backend_->set_zero_async_master_queue( data->total_npts_task_batch, den_eval_ptr, "Den Zero" );
+  // The density array covers the whole batch, so the first work range zeroes it
+  if( task_first == 0 )
+    data->device_backend_->set_zero_async_master_queue( data->total_npts_task_batch, den_eval_ptr, "Den Zero" );
 
   // Evaluate V variable
   auto aos_stack     = data->aos_stack;
   GauXC::eval_vvars_lda( ntasks, nbe_max, npts_max, den_select,
-    aos_stack.device_tasks, data->device_backend_->queue() );
+    aos_stack.device_tasks + task_first, data->device_backend_->queue() );
 
 }
 
-void AoSScheme1Base::eval_vvars_gga( XCDeviceData* _data, density_id den_select){
+void AoSScheme1Base::eval_vvars_gga( XCDeviceData* _data, density_id den_select,
+  task_work_range range ){
   auto* data = dynamic_cast<Data*>(_data);
   if ( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
   if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
 
+  // One launch per work range; the grid is sized by the range's largest nbe
   auto& tasks = data->host_device_tasks;
-  const auto ntasks = tasks.size();
+  const size_t task_first = range.first;
+  const size_t ntasks     = range.count ? range.count : tasks.size() - task_first;
   size_t nbe_max = 0, npts_max = 0;
-  for( auto& task : tasks ) {
-    nbe_max  = std::max( nbe_max, task.bfn_screening.nbe );
-    npts_max = std::max( npts_max, task.npts );
+  for( size_t i = task_first; i < task_first + ntasks; ++i ) {
+    nbe_max  = std::max( nbe_max, tasks[i].bfn_screening.nbe );
+    npts_max = std::max( npts_max, tasks[i].npts );
   }
 
   // Zero density
@@ -775,15 +825,18 @@ void AoSScheme1Base::eval_vvars_gga( XCDeviceData* _data, density_id den_select)
       GAUXC_GENERIC_EXCEPTION( "eval_vvars_gga called with invalid density selected!" );
   }
 
+  // The density arrays cover the whole batch, so the first work range zeroes them
+  if( task_first == 0 ) {
   data->device_backend_->set_zero_async_master_queue( data->total_npts_task_batch, den_eval_ptr, "Den Zero" );
   data->device_backend_->set_zero_async_master_queue( data->total_npts_task_batch, den_x_eval_ptr, "Den Zero" );
   data->device_backend_->set_zero_async_master_queue( data->total_npts_task_batch, den_y_eval_ptr, "Den Zero" );
   data->device_backend_->set_zero_async_master_queue( data->total_npts_task_batch, den_z_eval_ptr, "Den Zero" );
+  }
   
   // Evaluate V variable
   auto aos_stack = data->aos_stack;
   GauXC::eval_vvars_gga( ntasks, nbe_max, npts_max, den_select,
-    aos_stack.device_tasks, data->device_backend_->queue() );
+    aos_stack.device_tasks + task_first, data->device_backend_->queue() );
 
 }
 
@@ -1356,7 +1409,7 @@ void scale_mgga_output(size_t npts, T& base_stack, DeviceBackend* backend, bool 
 
 
 void AoSScheme1Base::eval_kern_exc_vxc_lda( const functional_type& func, 
-  XCDeviceData* _data ) {
+  XCDeviceData* _data, point_work_range range ) {
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
@@ -1366,6 +1419,7 @@ void AoSScheme1Base::eval_kern_exc_vxc_lda( const functional_type& func,
   if( !func.is_lda() ) GAUXC_GENERIC_EXCEPTION("XC Kernel not LDA!");
 
   auto base_stack    = data->base_stack;
+  advance_exc_vxc_points( base_stack, range.first );
 
   const bool is_RKS = data->allocated_terms.ks_scheme == RKS;
   const bool is_UKS = data->allocated_terms.ks_scheme == UKS;
@@ -1373,9 +1427,33 @@ void AoSScheme1Base::eval_kern_exc_vxc_lda( const functional_type& func,
   const bool is_pol = is_UKS or is_GKS;
   const bool is_excgrad = data->allocated_terms.exc_grad;
 
-  const size_t npts = data->total_npts_task_batch ;
+  const size_t npts = range.count ? range.count
+                                 : data->total_npts_task_batch - range.first;
   
   auto* den_eval_ptr = base_stack.den_s_eval_device;
+
+  // Unpolarized functional on the polarized shape: rho_alpha == rho_beta, so
+  // evaluate on the total density; the derivative is the same in both channels
+  if( is_pol and not func.is_polarized() ) {
+    auto  handle  = data->device_backend_->master_blas_handle();
+    auto* backend = data->device_backend_;
+    auto* den_tot = base_stack.den_interleaved_device;
+
+    backend->copy_async( npts, base_stack.den_s_eval_device, den_tot, "rho_a -> rho" );
+    increment( handle, base_stack.den_z_eval_device, den_tot, (int)npts );
+
+    GauXC::eval_kern_exc_vxc_lda( func, npts, den_tot, base_stack.eps_eval_device,
+      base_stack.vrho_eval_device, backend->queue() );
+
+    backend->copy_async( npts, base_stack.vrho_eval_device,
+      base_stack.vrho_pos_eval_device, "vrho -> vrho+" );
+    backend->copy_async( npts, base_stack.vrho_eval_device,
+      base_stack.vrho_neg_eval_device, "vrho -> vrho-" );
+
+    scale_lda_output(npts, base_stack, backend, true);
+    backend->check_error("exc_vxc lda spin compensated" __FILE__ ": " + std::to_string(__LINE__));
+    return;
+  }
 
   if ( is_pol ) {
     den_eval_ptr = base_stack.den_interleaved_device;
@@ -1394,7 +1472,7 @@ void AoSScheme1Base::eval_kern_exc_vxc_lda( const functional_type& func,
 
 
 void AoSScheme1Base::eval_kern_exc_vxc_gga( const functional_type& func, 
-  XCDeviceData* _data ) {
+  XCDeviceData* _data, point_work_range range ) {
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
@@ -1404,6 +1482,7 @@ void AoSScheme1Base::eval_kern_exc_vxc_gga( const functional_type& func,
   if( !func.is_gga() ) GAUXC_GENERIC_EXCEPTION("XC Kernel not GGA!");
 
   auto base_stack    = data->base_stack;
+  advance_exc_vxc_points( base_stack, range.first );
   double* den_eval_ptr = base_stack.den_s_eval_device;
   
   const bool is_RKS = data->allocated_terms.ks_scheme == RKS;
@@ -1412,14 +1491,54 @@ void AoSScheme1Base::eval_kern_exc_vxc_gga( const functional_type& func,
   const bool is_pol  = is_UKS or is_GKS;
   const bool is_excgrad = data->allocated_terms.exc_grad;
 
-  const size_t npts = data->total_npts_task_batch ;
-  
+  const size_t npts = range.count ? range.count
+                                 : data->total_npts_task_batch - range.first;
+
+  // Unpolarized functional on the polarized shape, as in eval_kern_exc_vxc_lda;
+  // |grad rho|^2 = sigma_aa + 2 sigma_ab + sigma_bb, so the three spin-gradient
+  // derivatives are (vgamma, 2 vgamma, vgamma)
+  if( is_pol and not func.is_polarized() ) {
+    auto  handle    = data->device_backend_->master_blas_handle();
+    auto* backend   = data->device_backend_;
+    auto* den_tot   = base_stack.den_interleaved_device;
+    auto* gamma_tot = base_stack.gamma_eval_device;
+
+    backend->copy_async( npts, base_stack.den_s_eval_device, den_tot, "rho_a -> rho" );
+    increment( handle, base_stack.den_z_eval_device, den_tot, (int)npts );
+
+    backend->copy_async( npts, base_stack.gamma_pp_eval_device, gamma_tot, "sigma_aa -> gamma" );
+    increment( handle, base_stack.gamma_pm_eval_device, gamma_tot, (int)npts );
+    increment( handle, base_stack.gamma_pm_eval_device, gamma_tot, (int)npts );
+    increment( handle, base_stack.gamma_mm_eval_device, gamma_tot, (int)npts );
+
+    GauXC::eval_kern_exc_vxc_gga( func, npts, den_tot, gamma_tot,
+      base_stack.eps_eval_device, base_stack.vrho_eval_device,
+      base_stack.vgamma_eval_device, backend->queue() );
+
+    backend->copy_async( npts, base_stack.vrho_eval_device,
+      base_stack.vrho_pos_eval_device, "vrho -> vrho+" );
+    backend->copy_async( npts, base_stack.vrho_eval_device,
+      base_stack.vrho_neg_eval_device, "vrho -> vrho-" );
+    backend->copy_async( npts, base_stack.vgamma_eval_device,
+      base_stack.vgamma_pp_eval_device, "vgamma -> vgamma++" );
+    backend->copy_async( npts, base_stack.vgamma_eval_device,
+      base_stack.vgamma_mm_eval_device, "vgamma -> vgamma--" );
+    backend->copy_async( npts, base_stack.vgamma_eval_device,
+      base_stack.vgamma_pm_eval_device, "vgamma -> vgamma+-" );
+    increment( handle, base_stack.vgamma_eval_device,
+      base_stack.vgamma_pm_eval_device, (int)npts );
+
+    scale_gga_output(npts, base_stack, backend, true);
+    backend->check_error("exc_vxc gga spin compensated" __FILE__ ": " + std::to_string(__LINE__));
+    return;
+  }
+
   if(is_pol) {
     den_eval_ptr = base_stack.den_interleaved_device;
     interleave_gga_input(npts, base_stack, data->device_backend_);
   }
 
-  GauXC::eval_kern_exc_vxc_gga( func, data->total_npts_task_batch, 
+  GauXC::eval_kern_exc_vxc_gga( func, npts,
     den_eval_ptr, base_stack.gamma_eval_device, 
     base_stack.eps_eval_device, base_stack.vrho_eval_device, 
     base_stack.vgamma_eval_device, data->device_backend_->queue() );

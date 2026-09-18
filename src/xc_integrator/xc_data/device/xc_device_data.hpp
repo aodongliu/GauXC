@@ -16,6 +16,7 @@
 #include <gauxc/basisset_map.hpp>
 #include <gauxc/shell_pair.hpp>
 #include <gauxc/molmeta.hpp>
+#include <gauxc/exceptions.hpp>
 //#include <gauxc/reduction_driver.hpp>
 #include <any>
 #include <cstring>
@@ -60,6 +61,85 @@ struct integrator_term_tracker {
     std::memset( this, 0, sizeof(integrator_term_tracker) );
   }
 };
+
+
+/*
+ * Multiparticle (NEO) descriptors. Several species share one grid; the union
+ * basis is the concatenation of their shells, the density is block diagonal
+ * over it, and a batch's work is one task per (grid task, species): the
+ * species tasks. They are ordered species by species inside a batch.
+ */
+
+/// One species of a multiparticle call
+struct multiparticle_species {
+  size_t               index                = 0;             ///< the index of the species
+  int32_t              nbf                  = 0;             ///< basis functions in its own basis
+  int32_t              nshells              = 0;             ///< shells in its own basis
+  bool                 has_intra_functional = false;         ///< it carries an intra functional of its own
+  bool                 build_vxc            = false;         ///< the caller asked for its VXC
+  bool                 participates         = false;         ///< it takes part in this call: an active intra functional of its own, or a member of an active pair
+  integrator_xc_approx xc_approx            = _UNDEF_APPROX; ///< LDA or GGA, that of its own intra functional
+  integrator_ks_scheme ks_scheme            = _UNDEF_SCHEME; ///< RKS (one density matrix) or UKS (scalar and z)
+};
+
+/// One electron / quantum-particle pair of a multiparticle call
+struct multiparticle_pair {
+  size_t electron = 0;     ///< the index of the electron species
+  size_t particle = 0;     ///< the index of the quantum particle
+  bool   active   = false; ///< the caller asked for this pair's functional in this call
+};
+
+/// The species and the pairs of a multiparticle call
+struct multiparticle_tracker {
+  std::vector<multiparticle_species> species;        ///< one per species, in load balancer order
+  std::vector<multiparticle_pair>    pairs;          ///< one per pair functional the caller set up, in its order
+  bool                               do_vxc = false; ///< at least one species asked for its VXC
+
+  inline size_t nspecies() const { return species.size(); }
+};
+
+/// A contiguous run of the batch's device task array that one launch covers
+struct task_work_range {
+  size_t  first   = 0; ///< the first task of the run, an index into the batch's tasks
+  size_t  count   = 0; ///< tasks in the run; 0 means "to the end of the batch"
+  int32_t nbe_max = 0; ///< the largest nbe among them, printed by the trace
+};
+
+/// A contiguous stretch of the batch's per-point arrays that one call covers
+struct point_work_range {
+  size_t first = 0; ///< the first point of the stretch
+  size_t count = 0; ///< points in the stretch; 0 means "to the end of the batch"
+};
+
+/// Where one species' shells and basis functions start in the union basis
+struct species_basis_range {
+  int32_t shell_offset          = 0; ///< the index of its first shell in the union basis
+  int32_t basis_function_offset = 0; ///< the index of its first basis function in the union basis
+};
+
+/// One batch of the species-task list: every species task of a run of grid
+/// tasks, as many grid tasks as fit in device memory at once
+struct multiparticle_batch {
+  size_t first_task = 0; ///< the index of its first species task in the list
+  size_t last_task  = 0; ///< one past its last species task
+  size_t npts_grid  = 0; ///< points of its grid tasks: the size of its one copy of the grid
+  size_t npts_total = 0; ///< points summed over its species tasks: the size of every per-point array
+  size_t npts_intra = 0; ///< points of the species carrying intra functionals, the prefix [0, npts_intra)
+  std::vector<XCTask>::iterator grid_task_begin;      ///< its first grid task, in the load balancer's list
+  std::vector<XCTask>::iterator grid_task_end;        ///< one past its last grid task
+  std::vector<point_work_range> intra_point_ranges;   ///< per species: its points in the batch; empty if it has no intra functional
+  std::vector<task_work_range>  task_work_ranges;     ///< the runs of comparable nbe the per-point kernels launch over, in list order
+};
+
+/// The species-task list of one call, with its batches
+struct multiparticle_layout {
+  std::vector<XCTask>   species_tasks;      ///< one ordinary task per (grid task, species), in batch order
+  std::vector<size_t>   grid_offsets;       ///< per species task: where its grid task starts in the batch's copy of the grid
+  std::vector<size_t>   point_offsets;      ///< per species task: where its own points start in the batch's per-point arrays
+  std::vector<uint32_t> species_indices;    ///< per species task: the species it belongs to
+  std::vector<multiparticle_batch> batches; ///< the batches, in order
+};
+
 
 #define PRDVL(pred,val) (pred) ? (val) : 0ul
 
@@ -781,6 +861,37 @@ struct XCDeviceData {
   virtual double* fxc_x_device_data() = 0;
   virtual device_queue queue() = 0;
 
+
+  // Multiparticle (NEO) API, implemented in XCDeviceStackData
+
+  /// Build the species-task list of one call and cut it into batches
+  virtual void build_species_tasks( integrator_term_tracker,
+    const multiparticle_tracker&, const std::vector<species_basis_range>&,
+    const BasisSetMap&, host_task_iterator, host_task_iterator,
+    multiparticle_layout& ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle species task list NYI for this XCDeviceData");
+  }
+
+  /// Allocate and pack one batch of the species-task list
+  virtual void generate_buffers_multiparticle( integrator_term_tracker,
+    const BasisSetMap&, multiparticle_layout&, size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle buffers NYI for this XCDeviceData");
+  }
+
+  /// Carve and zero one intra XC energy accumulator per species
+  virtual void allocate_static_data_multiparticle( size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
+  }
+
+  /// Copy the per-species intra XC energies back to the host
+  virtual void retrieve_intra_exc( double*, size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
+  }
+
+  /// The intra XC energy accumulator of one species, on the device
+  virtual double* intra_exc_device_data( size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
+  }
 
 };
 

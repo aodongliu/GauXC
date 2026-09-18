@@ -74,8 +74,9 @@ public:
   void eval_uvars_lda ( XCDeviceData*, integrator_ks_scheme ) ;
   void eval_uvars_gga ( XCDeviceData*, integrator_ks_scheme ) ;
   void eval_uvars_mgga( XCDeviceData*, integrator_ks_scheme, bool ) ;
-  void eval_vvars_lda ( XCDeviceData*, density_id ) ;
-  void eval_vvars_gga ( XCDeviceData*, density_id ) ;
+  /// `range`: the run of the batch's device task array one launch covers; the default is the whole batch
+  void eval_vvars_lda ( XCDeviceData*, density_id, task_work_range = {} ) ;
+  void eval_vvars_gga ( XCDeviceData*, density_id, task_work_range = {} ) ;
   void eval_vvars_mgga( XCDeviceData*, density_id, bool ) ;
 
   void eval_tmat_lda ( XCDeviceData*, integrator_ks_scheme ) ;
@@ -86,16 +87,21 @@ public:
   void eval_vvars_mgga_trial( XCDeviceData*, density_id, bool ) ;
 
 
-  void eval_kern_exc_vxc_lda( const functional_type&, XCDeviceData* );
-  void eval_kern_exc_vxc_gga( const functional_type&, XCDeviceData* );
+  /// `range`: the stretch of the batch's per-point arrays one call covers; the default is the whole batch
+  void eval_kern_exc_vxc_lda( const functional_type&, XCDeviceData*,
+    point_work_range = {} );
+  void eval_kern_exc_vxc_gga( const functional_type&, XCDeviceData*,
+    point_work_range = {} );
   void eval_kern_exc_vxc_mgga( const functional_type&, XCDeviceData* );
 
   void eval_kern_vxc_fxc_lda( const functional_type&, XCDeviceData* );
   void eval_kern_vxc_fxc_gga( const functional_type&, XCDeviceData* );
   void eval_kern_vxc_fxc_mgga( const functional_type&, XCDeviceData* );
 
-  void eval_zmat_lda_vxc( XCDeviceData*, integrator_ks_scheme, density_id ) ;
-  void eval_zmat_gga_vxc( XCDeviceData*, integrator_ks_scheme, density_id ) ;
+  void eval_zmat_lda_vxc( XCDeviceData*, integrator_ks_scheme, density_id,
+    task_work_range = {} ) ;
+  void eval_zmat_gga_vxc( XCDeviceData*, integrator_ks_scheme, density_id,
+    task_work_range = {} ) ;
   void eval_zmat_mgga_vxc( XCDeviceData*, integrator_ks_scheme, bool, density_id ) ;
   void eval_mmat_mgga_vxc( XCDeviceData*, integrator_ks_scheme, bool, density_id );
 
@@ -107,8 +113,9 @@ public:
   void eval_exx_fmat( XCDeviceData* );
   void eval_exx_gmat( XCDeviceData*, const BasisSetMap& );
 
-  void inc_exc( XCDeviceData* );
-  void inc_nel( XCDeviceData* );
+  /// Accumulate EXC over `range` into `accumulator`; the default is the call's one accumulator
+  void inc_exc( XCDeviceData*, point_work_range = {}, double* accumulator = nullptr );
+  void inc_nel( XCDeviceData*, point_work_range = {} );
   void inc_vxc( XCDeviceData*, density_id, bool do_m = false );
   void inc_fxc( XCDeviceData*, density_id, bool do_m = false );
   void inc_exc_grad_lda( XCDeviceData*, integrator_ks_scheme, bool );

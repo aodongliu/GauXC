@@ -48,25 +48,27 @@ struct LocalDeviceWorkDriverPIMPL {
   virtual void eval_uvars_lda( XCDeviceData*, integrator_ks_scheme ) = 0;
   virtual void eval_uvars_gga( XCDeviceData*, integrator_ks_scheme ) = 0;
   virtual void eval_uvars_mgga( XCDeviceData*, integrator_ks_scheme, bool ) = 0;
-  virtual void eval_vvars_lda ( XCDeviceData*, density_id ) = 0;
-  virtual void eval_vvars_gga ( XCDeviceData*, density_id ) = 0;
+  virtual void eval_vvars_lda ( XCDeviceData*, density_id, task_work_range ) = 0;
+  virtual void eval_vvars_gga ( XCDeviceData*, density_id, task_work_range ) = 0;
   virtual void eval_vvars_mgga( XCDeviceData*, density_id, bool ) = 0;
-  virtual void eval_kern_exc_vxc_lda( const functional_type&, XCDeviceData* ) = 0;
-  virtual void eval_kern_exc_vxc_gga( const functional_type&, XCDeviceData* ) = 0;
+  virtual void eval_kern_exc_vxc_lda( const functional_type&, XCDeviceData*,
+    point_work_range ) = 0;
+  virtual void eval_kern_exc_vxc_gga( const functional_type&, XCDeviceData*,
+    point_work_range ) = 0;
   virtual void eval_kern_exc_vxc_mgga( const functional_type&, XCDeviceData* ) = 0;
   virtual void eval_kern_vxc_fxc_lda( const functional_type&, XCDeviceData* ) = 0;
   virtual void eval_kern_vxc_fxc_gga( const functional_type&, XCDeviceData* ) = 0;
   virtual void eval_kern_vxc_fxc_mgga( const functional_type&, XCDeviceData* ) = 0;
-  virtual void eval_zmat_lda_vxc( XCDeviceData*, integrator_ks_scheme, density_id ) = 0;
-  virtual void eval_zmat_gga_vxc( XCDeviceData*, integrator_ks_scheme, density_id ) = 0;
+  virtual void eval_zmat_lda_vxc( XCDeviceData*, integrator_ks_scheme, density_id, task_work_range ) = 0;
+  virtual void eval_zmat_gga_vxc( XCDeviceData*, integrator_ks_scheme, density_id, task_work_range ) = 0;
   virtual void eval_zmat_mgga_vxc( XCDeviceData*, integrator_ks_scheme, bool, density_id ) = 0;
   virtual void eval_mmat_mgga_vxc( XCDeviceData*, integrator_ks_scheme, bool, density_id ) = 0;
   virtual void eval_zmat_lda_fxc( XCDeviceData*, density_id ) = 0;
   virtual void eval_zmat_gga_fxc( XCDeviceData*, density_id ) = 0;
   virtual void eval_zmat_mgga_fxc( XCDeviceData*, bool, density_id ) = 0;
   virtual void eval_mmat_mgga_fxc( XCDeviceData*, bool, density_id ) = 0;
-  virtual void inc_exc( XCDeviceData* ) = 0;
-  virtual void inc_nel( XCDeviceData* ) = 0;
+  virtual void inc_exc( XCDeviceData*, point_work_range, double* accumulator ) = 0;
+  virtual void inc_nel( XCDeviceData*, point_work_range ) = 0;
   virtual void inc_vxc( XCDeviceData* , density_id, bool) = 0;
   virtual void inc_fxc( XCDeviceData* , density_id, bool) = 0;  
   virtual void inc_exc_grad_lda( XCDeviceData*, integrator_ks_scheme, bool  ) = 0;

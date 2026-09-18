@@ -27,8 +27,8 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
   void eval_uvars_lda( XCDeviceData*, integrator_ks_scheme ) override final;
   void eval_uvars_gga( XCDeviceData*, integrator_ks_scheme ) override final;
   void eval_uvars_mgga( XCDeviceData*, integrator_ks_scheme, bool ) override final;
-  void eval_vvars_lda ( XCDeviceData*, density_id ) override final;
-  void eval_vvars_gga ( XCDeviceData*, density_id ) override final;
+  void eval_vvars_lda ( XCDeviceData*, density_id, task_work_range ) override final;
+  void eval_vvars_gga ( XCDeviceData*, density_id, task_work_range ) override final;
   void eval_vvars_mgga( XCDeviceData*, density_id, bool ) override final;
 
   void eval_tmat_lda( XCDeviceData*, integrator_ks_scheme ) override final;
@@ -38,8 +38,8 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
   void eval_vvars_gga_trial ( XCDeviceData*, density_id ) override final;
   void eval_vvars_mgga_trial( XCDeviceData*, density_id, bool ) override final;
 
-  void eval_zmat_lda_vxc( XCDeviceData*, integrator_ks_scheme, density_id ) override final;
-  void eval_zmat_gga_vxc( XCDeviceData*, integrator_ks_scheme, density_id ) override final;
+  void eval_zmat_lda_vxc( XCDeviceData*, integrator_ks_scheme, density_id, task_work_range ) override final;
+  void eval_zmat_gga_vxc( XCDeviceData*, integrator_ks_scheme, density_id, task_work_range ) override final;
   void eval_zmat_mgga_vxc( XCDeviceData*, integrator_ks_scheme, bool, density_id ) override final;
   void eval_mmat_mgga_vxc( XCDeviceData*, integrator_ks_scheme, bool, density_id ) override final;
 
@@ -48,15 +48,17 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
   void eval_zmat_mgga_fxc( XCDeviceData*, bool, density_id ) override final;
   void eval_mmat_mgga_fxc( XCDeviceData*, bool, density_id ) override final;
 
-  void eval_kern_exc_vxc_lda( const functional_type&, XCDeviceData* ) override final;
-  void eval_kern_exc_vxc_gga( const functional_type&, XCDeviceData* ) override final;
+  void eval_kern_exc_vxc_lda( const functional_type&, XCDeviceData*,
+    point_work_range ) override final;
+  void eval_kern_exc_vxc_gga( const functional_type&, XCDeviceData*,
+    point_work_range ) override final;
   void eval_kern_exc_vxc_mgga( const functional_type&, XCDeviceData* ) override final;
   void eval_kern_vxc_fxc_lda( const functional_type&, XCDeviceData* ) override final;
   void eval_kern_vxc_fxc_gga( const functional_type&, XCDeviceData* ) override final;
   void eval_kern_vxc_fxc_mgga( const functional_type&, XCDeviceData* ) override final;
 
-  void inc_exc( XCDeviceData* ) override final;
-  void inc_nel( XCDeviceData* ) override final;
+  void inc_exc( XCDeviceData*, point_work_range, double* accumulator ) override final;
+  void inc_nel( XCDeviceData*, point_work_range ) override final;
   void inc_exc_grad_lda( XCDeviceData*, integrator_ks_scheme, bool  ) override final;
   void inc_exc_grad_gga( XCDeviceData*, integrator_ks_scheme, bool  ) override final;
   void inc_exc_grad_mgga( XCDeviceData*, integrator_ks_scheme , bool, bool ) override final;

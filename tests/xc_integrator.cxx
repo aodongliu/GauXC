@@ -664,6 +664,76 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
 
 }
 
+#ifdef GAUXC_HAS_DEVICE
+// Every species in the list with the pair functionals set up but not yet
+// evaluated: the electron reproduces the single-species device path, the
+// protons come back with zero energy and zero VXC
+void test_neo_device_pair_stage_absent( const RuntimeEnvironment& rt,
+  std::string reference_file, functional_type& func, functional_type& epc_func,
+  PruningScheme pruning_scheme ) {
+
+  using matrix_type = Eigen::MatrixXd;
+
+  auto ref = read_neo_reference( reference_file );
+  const size_t nprot    = ref.nprot();
+  const size_t nspecies = ref.nspecies();
+
+  auto mg = MolGridFactory::create_default_molgrid(ref.mol, pruning_scheme,
+    BatchSize(512), RadialQuad::MuraKnowles, AtomicGridSizeDefault::UltraFineGrid);
+  LoadBalancerFactory lb_factory( ExecutionSpace::Host, "Default" );
+  MolecularWeightsFactory mw_factory( ExecutionSpace::Device, "Default",
+    MolecularWeightsSettings{} );
+  auto mw = mw_factory.get_instance();
+  XCIntegratorFactory<matrix_type> integrator_factory( ExecutionSpace::Device,
+    "Replicated", "Default", "Default", "Default" );
+
+  // The electron alone, on the single-species path
+  auto lb_electron = lb_factory.get_instance( rt, ref.mol, mg, ref.bases[0] );
+  mw.modify_weights( lb_electron );
+  auto integrator_electron = integrator_factory.get_instance( func, lb_electron );
+  double EXC_electron = 0.;
+  matrix_type VXC_electron, VXCz_electron;
+  if( ref.uks ) std::tie( EXC_electron, VXC_electron, VXCz_electron ) =
+    integrator_electron.eval_exc_vxc( ref.Ps, ref.Pz );
+  else std::tie( EXC_electron, VXC_electron ) = integrator_electron.eval_exc_vxc( ref.Ps );
+
+  // Every species, with one pair per proton set up
+  auto lb = lb_factory.get_instance( rt, ref.mol, mg, ref.bases );
+  mw.modify_weights( lb );
+  auto integrator = integrator_factory.get_instance( func, lb );
+
+  MultiParticleFunctionalSpec spec;
+  spec.intra_functionals.resize( nspecies );
+  spec.intra_functionals[0].push_back( std::make_shared<functional_type>(func) );
+  for( size_t i = 0; i < nprot; ++i )
+    spec.inter_functionals.push_back( MultiParticlePairFunctional{ 0, i+1,
+      { std::make_shared<functional_type>(epc_func) } } );
+
+  MultiParticleXCTerms terms;
+  for( size_t p = 0; p < nspecies; ++p ) {
+    terms.active_intra.push_back(p);
+    terms.vxc_targets.push_back(p);
+  }
+  for( size_t j = 0; j < nprot; ++j ) terms.active_inter.push_back(j);
+
+  auto densities = ref.densities();
+  auto result = integrator.eval_exc_vxc( densities, spec, terms );
+
+  REQUIRE( result.intra_exc.size() == nspecies );
+  CHECK( result.intra_exc[0] == Approx(EXC_electron).epsilon(1e-10).margin(1e-14) );
+  CHECK( (result.VXCs[0] - VXC_electron).norm() / ref.bases[0].nbf() < 1e-10 );
+  if( ref.uks )
+    CHECK( (result.VXCz[0] - VXCz_electron).norm() / ref.bases[0].nbf() < 1e-10 );
+  for( size_t i = 0; i < nprot; ++i ) {
+    INFO( "protonic species " << i );
+    CHECK( result.intra_exc[i+1] == 0. );
+    CHECK( result.inter_pair_exc[i] == 0. );
+    CHECK( result.VXCs[i+1].norm() == 0. );
+    if( ref.prot_uks[i] ) CHECK( result.VXCz[i+1].norm() == 0. );
+  }
+}
+#endif
+
 void test_neo_integrator(std::string reference_file, functional_type& func,
   functional_type& epc_func, PruningScheme pruning_scheme) {
 
@@ -677,6 +747,13 @@ void test_neo_integrator(std::string reference_file, functional_type& func,
   SECTION( "Host" ) {
     test_neo_xc_integrator( ExecutionSpace::Host, rt, reference_file, func,
       epc_func, pruning_scheme, true );
+  }
+#endif
+
+#ifdef GAUXC_HAS_DEVICE
+  SECTION( "Device, pair stage absent" ) {
+    test_neo_device_pair_stage_absent( rt, reference_file, func, epc_func,
+      pruning_scheme );
   }
 #endif
 }
@@ -814,6 +891,7 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
   auto blyp    = ExchCXX::Functional::BLYP;
   auto b3lyp   = ExchCXX::Functional::B3LYP;
   auto pbe     = ExchCXX::Functional::PBE;
+  auto pbe0    = ExchCXX::Functional::PBE0;
   auto svwn5   = ExchCXX::Functional::SVWN5;
   auto epc17_2 = ExchCXX::Functional::EPC17_2;
 
@@ -858,4 +936,69 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
       "/w08_b3lyp_epc17-2_cc-pvdz_16protsp_ssf.hdf5", func, epcfunc,
       PruningScheme::Unpruned );
   }
+
+#ifdef GAUXC_HAS_DEVICE
+  // One species and no pairs: the multiparticle entry point equals the plain one
+  SECTION( "one species reduces to the single-species path" ) {
+
+    using matrix_type = Eigen::MatrixXd;
+    auto rt = DeviceRuntimeEnvironment(GAUXC_MPI_CODE(MPI_COMM_WORLD,) 0.9);
+
+    auto reduces = [&]( std::string reference_file, functional_type& func ) {
+      Molecule mol;
+      BasisSet<double> basis;
+      read_hdf5_record( mol,   reference_file, "/MOLECULE" );
+      read_hdf5_record( basis, reference_file, "/BASIS"    );
+      for( auto& sh : basis )
+        sh.set_shell_tolerance( std::numeric_limits<double>::epsilon() );
+
+      matrix_type P;
+      {
+        HighFive::File file( reference_file, HighFive::File::ReadOnly );
+        auto dset = file.getDataSet("/DENSITY");
+        auto dims = dset.getDimensions();
+        P = matrix_type( dims[0], dims[1] );
+        dset.read( P.data() );
+      }
+
+      auto mg = MolGridFactory::create_default_molgrid(mol,
+        PruningScheme::Unpruned, BatchSize(512), RadialQuad::MuraKnowles,
+        AtomicGridSizeDefault::UltraFineGrid);
+      LoadBalancerFactory lb_factory( ExecutionSpace::Host, "Default" );
+      auto lb = lb_factory.get_instance( rt, mol, mg, basis );
+      MolecularWeightsFactory( ExecutionSpace::Device, "Default",
+        MolecularWeightsSettings{} ).get_instance().modify_weights(lb);
+
+      XCIntegratorFactory<matrix_type> factory( ExecutionSpace::Device,
+        "Replicated", "Default", "Default", "Default" );
+      auto integrator = factory.get_instance( func, lb );
+
+      double EXC = 0.;
+      matrix_type VXC;
+      std::tie( EXC, VXC ) = integrator.eval_exc_vxc( P );
+
+      MultiParticleFunctionalSpec spec;
+      spec.intra_functionals.resize(1);
+      spec.intra_functionals[0].push_back( std::make_shared<functional_type>(func) );
+      std::vector<multiparticle_density_type> densities = {
+        multiparticle_density_type{ &P, nullptr } };
+      auto r = integrator.eval_exc_vxc( densities, spec );
+
+      REQUIRE( r.intra_exc.size() == 1 );
+      CHECK( r.inter_exc == 0. );
+      CHECK( r.intra_exc[0] == Approx(EXC).epsilon(1e-10).margin(1e-14) );
+      CHECK( (r.VXCs[0] - VXC).norm() / basis.nbf() < 1e-10 );
+    };
+
+    SECTION( "Benzene / SVWN5 / cc-pVDZ" ) {
+      auto func = make_functional(svwn5, unpol);
+      reduces( GAUXC_REF_DATA_PATH "/benzene_svwn5_cc-pvdz_ufg_ssf.hdf5", func );
+    }
+
+    SECTION( "Benzene / PBE0 / cc-pVDZ" ) {
+      auto func = make_functional(pbe0, unpol);
+      reduces( GAUXC_REF_DATA_PATH "/benzene_pbe0_cc-pvdz_ufg_ssf.hdf5", func );
+    }
+  }
+#endif
 }

@@ -319,7 +319,19 @@ struct XCDeviceStackData : public XCDeviceData {
   /// The energy accumulators of one call, carved once and read back at the end
   struct multiparticle_static_data {
     double* intra_exc_device = nullptr; ///< one intra XC energy per species
+    double* pair_exc_device  = nullptr; ///< one pair energy per pair
     inline void reset() { std::memset(this,0,sizeof(multiparticle_static_data)); }
+  };
+
+  /// The pair stage's per-batch arrays: the batch's pairs as one point list
+  struct multiparticle_pair_stack {
+    double*           density_device = nullptr; ///< (2 npts) interleaved electron, particle density
+    double*           eps_device     = nullptr; ///< (npts) pair energy density
+    double*           vrho_device    = nullptr; ///< (2 npts) interleaved pair potential derivatives
+    pair_point_range* ranges_device  = nullptr; ///< (nranges) the batch's pair point ranges
+    size_t            npts           = 0;       ///< points in the pair list
+    size_t            nranges        = 0;       ///< pair point ranges in the batch
+    inline void reset() { std::memset(this,0,sizeof(multiparticle_pair_stack)); }
   };
 
   size_t nspecies_ = 0;   ///< species of the call: one intra energy accumulator each
@@ -337,6 +349,7 @@ struct XCDeviceStackData : public XCDeviceData {
   bool multiparticle_active_ = false;
 
   multiparticle_static_data multiparticle_static;
+  multiparticle_pair_stack  pair_stack;
 
   void build_species_tasks( integrator_term_tracker terms,
     const multiparticle_tracker& tracker,
@@ -347,8 +360,9 @@ struct XCDeviceStackData : public XCDeviceData {
   void generate_buffers_multiparticle( integrator_term_tracker terms,
     const BasisSetMap& basis_map, multiparticle_layout& layout,
     size_t ibatch ) override final;
-  void allocate_static_data_multiparticle( size_t nspecies ) override final;
+  void allocate_static_data_multiparticle( size_t nspecies, size_t npairs ) override final;
   void retrieve_intra_exc( double* intra_EXC, size_t nspecies ) override final;
+  void retrieve_pair_exc( double* pair_EXC, size_t npairs ) override final;
   double* intra_exc_device_data( size_t species ) override final;
 
   /// Device backend instance to handle device specific execution

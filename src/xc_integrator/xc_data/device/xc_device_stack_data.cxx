@@ -66,6 +66,7 @@ void XCDeviceStackData::reset_allocations() {
   task_grid_offset_.clear();
   multiparticle_active_ = false;
   multiparticle_static.reset();
+  pair_stack.reset();
   dynmem_ptr = device_ptr;
   dynmem_sz  = devmem_sz;
   allocated_terms.reset();
@@ -1344,6 +1345,17 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
   // For different sizes of syr2k dispatch. See Step 4
   multiparticle_active_ = true;
 
+  // A quantum particle belongs to at most one active pair
+  {
+    std::vector<char> in_active_pair( nspecies, 0 );
+    for( const auto& pair : tracker.pairs ) {
+      if( not pair.active ) continue;
+      if( in_active_pair[pair.particle] )
+        GAUXC_GENERIC_EXCEPTION("MultiParticle: a quantum particle in more than one active pair is NYI");
+      in_active_pair[pair.particle] = 1;
+    }
+  }
+
   layout.species_tasks.clear();
   layout.grid_offsets.clear();
   layout.point_offsets.clear();
@@ -1418,9 +1430,11 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
     GAUXC_GENERIC_EXCEPTION("Insufficient memory to even start!");
   const size_t bytes_available = dynmem_sz - get_static_mem_requirement();
 
-  // Per grid task: one copy of its coordinates, its species tasks, and slack
-  // for the allocator's alignment
-  constexpr size_t grid_bytes_per_point          = 3 * sizeof(double);
+  // Per grid task: one copy of its coordinates, its species tasks, the pair
+  // stage's arrays for every pair live on it, and slack for the allocator's
+  // alignment
+  constexpr size_t grid_bytes_per_point  = 3 * sizeof(double);
+  constexpr size_t pair_bytes_per_point  = 5 * sizeof(double);
   constexpr size_t alignment_slack_bytes = 32 * 256;
 
   std::vector<size_t> grid_task_bytes( ngrid_tasks, 0 );
@@ -1430,6 +1444,13 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
       size_t bytes = grid_bytes_per_point * grid_task->points.size();
       for( size_t k = 0; k < grid_task_species_count[igrid_task]; ++k )
         bytes += task_bytes[ grid_task_offset[igrid_task] + k ];
+      for( const auto& pair : tracker.pairs ) {
+        if( not pair.active ) continue;
+        if( grid_task->basis_screening(pair.electron).nbe <= 0 or
+            grid_task->basis_screening(pair.particle).nbe <= 0 ) continue;
+        bytes += pair_bytes_per_point * grid_task->points.size()
+               + sizeof(pair_point_range);
+      }
       grid_task_bytes[igrid_task] = bytes + alignment_slack_bytes;
     }
   }
@@ -1488,6 +1509,7 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
     // and record that run as one work range. 
     // `species == nspecies` selects every species without an intra functional.
     size_t npts = 0;   // points appended so far: the next task's point offset
+    std::vector<size_t> task_point_offset( species_tasks.size(), 0 );
     auto add_work_range = [&]( size_t species, syr2k_size_class size_class ) {
       const size_t range_first = layout.species_tasks.size() - batch.first_task;
       int32_t nbe_max = 0;
@@ -1502,6 +1524,7 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
           const int32_t nbe = species_tasks[task].bfn_screening.nbe;
           if( syr2k_size_class_of(nbe) != size_class ) continue;
           nbe_max = std::max( nbe_max, nbe );
+          task_point_offset[task] = npts;
           layout.grid_offsets.push_back( grid_task_point_offset[igrid_in_batch] );
           layout.point_offsets.push_back( npts );
           layout.species_indices.push_back( static_cast<uint32_t>(species_index) );
@@ -1527,6 +1550,53 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
 
     batch.last_task  = layout.species_tasks.size();
     batch.npts_total = npts;
+
+    // The batch's pairs as one point list, ordered by functional, then by pair,
+    // then by grid task: a pair's points are one segment of it and a
+    // functional's points one range
+    std::vector<size_t> pair_order;
+    for( size_t pair = 0; pair < tracker.pairs.size(); ++pair )
+      if( tracker.pairs[pair].active ) pair_order.push_back( pair );
+    std::stable_sort( pair_order.begin(), pair_order.end(),
+      [&]( size_t a, size_t b ) {
+        return tracker.pairs[a].functional_group < tracker.pairs[b].functional_group;
+      });
+
+    size_t npts_pair = 0;
+    for( size_t ipair : pair_order ) {
+      const auto&  pair        = tracker.pairs[ipair];
+      const size_t first_point = npts_pair;
+      size_t igrid_in_batch    = 0;
+      for( size_t igrid_task = first_grid_task; igrid_task < last_grid_task; ++igrid_task, ++igrid_in_batch ) {
+        const size_t not_found     = species_tasks.size();
+        size_t       electron_task = not_found;
+        size_t       particle_task = not_found;
+        for( size_t k = 0; k < grid_task_species_count[igrid_task]; ++k ) {
+          const size_t task = grid_task_offset[igrid_task] + k;
+          if( species_indices[task] == pair.electron ) electron_task = task;
+          if( species_indices[task] == pair.particle ) particle_task = task;
+        }
+        if( electron_task == not_found or particle_task == not_found ) continue;
+        pair_point_range range;
+        range.pair              = static_cast<int32_t>( ipair );
+        range.npts              = static_cast<int32_t>( (batch.grid_task_begin + igrid_in_batch)->points.size() );
+        // The quantum particle's derivative reaches its second channel only
+        // when that channel carries the same density
+        range.particle_channels = tracker.species[pair.particle].ks_scheme == RKS ? 2 : 1;
+        range.first             = npts_pair;
+        range.electron_offset   = task_point_offset[electron_task];
+        range.particle_offset   = task_point_offset[particle_task];
+        batch.pair_point_ranges.push_back( range );
+        npts_pair += size_t( range.npts );
+      }
+      const size_t functional_group = pair.functional_group;
+      if( batch.pair_functional_ranges.size() <= functional_group )
+        batch.pair_functional_ranges.resize( functional_group + 1 );
+      auto& functional_points = batch.pair_functional_ranges[functional_group];
+      if( not functional_points.count ) functional_points.first = first_point;
+      functional_points.count = npts_pair - functional_points.first;
+    }
+
     layout.batches.push_back( std::move(batch) );
   }
 
@@ -1565,7 +1635,7 @@ void XCDeviceStackData::generate_buffers_multiparticle(
   //         per-task allocator with the grid excluded
   const bool shared_grid_on_entry = shared_grid_;
   shared_grid_ = true;
-  allocate_dynamic_stack( terms, batch_tasks_begin, batch_tasks_end,
+  auto buf = allocate_dynamic_stack( terms, batch_tasks_begin, batch_tasks_end,
     device_buffer_t{ mem.stack(), mem.nleft() } );
 
   // vrho and vgamma start at zero: the intra XC writes its own species' points only
@@ -1589,8 +1659,27 @@ void XCDeviceStackData::generate_buffers_multiparticle(
     }
   }
 
-  // ---- 3. Pack: the grid once from the grid tasks, here; the species tasks
-  //         through the per-task packer, which skips the grid
+  // ---- 3. The pair stage's arrays, from what the species-task list left
+  pair_stack.reset();
+  {
+    size_t npts_pair = 0;
+    for( const auto& range : batch.pair_point_ranges ) npts_pair += size_t( range.npts );
+    if( npts_pair ) {
+      auto [ pair_ptr, pair_bytes ] = buf;
+      buffer_adaptor pair_mem( pair_ptr, pair_bytes );
+      pair_stack.density_device = pair_mem.aligned_alloc<double>( 2*npts_pair, 256, csl );
+      pair_stack.eps_device     = pair_mem.aligned_alloc<double>( npts_pair, 256, csl );
+      pair_stack.vrho_device    = pair_mem.aligned_alloc<double>( 2*npts_pair, 256, csl );
+      pair_stack.ranges_device  = pair_mem.aligned_alloc<pair_point_range>(
+        batch.pair_point_ranges.size(), 256, csl );
+      buf = device_buffer_t{ pair_mem.stack(), pair_mem.nleft() };
+      pair_stack.npts    = npts_pair;
+      pair_stack.nranges = batch.pair_point_ranges.size();
+    }
+  }
+
+  // ---- 4. Pack: the grid and the pair point ranges here, once; the species
+  //         tasks through the per-task packer, which skips the grid
   {
     std::vector<double> points_x, points_y, points_z, grid_weights, weights;
     points_x.reserve( batch.npts_grid );
@@ -1619,6 +1708,9 @@ void XCDeviceStackData::generate_buffers_multiparticle(
     device_backend_->copy_async( batch.npts_grid,  points_y.data(), base_stack.points_y_device, "multiparticle points_y" );
     device_backend_->copy_async( batch.npts_grid,  points_z.data(), base_stack.points_z_device, "multiparticle points_z" );
     device_backend_->copy_async( batch.npts_total, weights.data(),  base_stack.weights_device,  "multiparticle weights"  );
+    if( pair_stack.nranges )
+      device_backend_->copy_async( pair_stack.nranges, batch.pair_point_ranges.data(),
+        pair_stack.ranges_device, "multiparticle pair ranges" );
     device_backend_->master_queue_synchronize();
   }
 
@@ -1627,17 +1719,22 @@ void XCDeviceStackData::generate_buffers_multiparticle(
 }
 
 
-void XCDeviceStackData::allocate_static_data_multiparticle( size_t nspecies ) {
+void XCDeviceStackData::allocate_static_data_multiparticle( size_t nspecies,
+  size_t npairs ) {
 
   if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
 
   nspecies_ = nspecies;
   buffer_adaptor mem( dynmem_ptr, dynmem_sz );
   multiparticle_static.intra_exc_device = mem.aligned_alloc<double>( nspecies, csl );
+  if( npairs )
+    multiparticle_static.pair_exc_device = mem.aligned_alloc<double>( npairs, csl );
   dynmem_ptr = mem.stack();
   dynmem_sz  = mem.nleft();
 
   device_backend_->set_zero( nspecies, multiparticle_static.intra_exc_device, "MultiParticle intra EXC Zero" );
+  if( npairs )
+    device_backend_->set_zero( npairs, multiparticle_static.pair_exc_device, "MultiParticle pair EXC Zero" );
 }
 
 
@@ -1648,6 +1745,18 @@ void XCDeviceStackData::retrieve_intra_exc( double* intra_EXC, size_t nspecies )
     GAUXC_GENERIC_EXCEPTION("MultiParticle: intra EXC accumulator not allocated");
   device_backend_->copy_async( nspecies, multiparticle_static.intra_exc_device,
     intra_EXC, "MultiParticle intra EXC D2H" );
+  device_backend_->master_queue_synchronize();
+}
+
+
+void XCDeviceStackData::retrieve_pair_exc( double* pair_EXC, size_t npairs ) {
+
+  if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
+  if( not npairs ) return;
+  if( not multiparticle_static.pair_exc_device )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: pair EXC accumulator not allocated");
+  device_backend_->copy_async( npairs, multiparticle_static.pair_exc_device,
+    pair_EXC, "MultiParticle pair EXC D2H" );
   device_backend_->master_queue_synchronize();
 }
 

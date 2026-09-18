@@ -84,9 +84,10 @@ struct multiparticle_species {
 
 /// One electron / quantum-particle pair of a multiparticle call
 struct multiparticle_pair {
-  size_t electron = 0;     ///< the index of the electron species
-  size_t particle = 0;     ///< the index of the quantum particle
-  bool   active   = false; ///< the caller asked for this pair's functional in this call
+  size_t electron         = 0;     ///< the index of the electron species
+  size_t particle         = 0;     ///< the index of the quantum particle
+  bool   active           = false; ///< the caller asked for this pair's functional in this call
+  size_t functional_group = 0;     ///< index of its distinct pair functional; pairs sharing a functional share it
 };
 
 /// The species and the pairs of a multiparticle call
@@ -117,6 +118,17 @@ struct species_basis_range {
   int32_t basis_function_offset = 0; ///< the index of its first basis function in the union basis
 };
 
+/// One pair's points inside a batch: where they sit in the batch's pair list
+/// and where its two species' points are
+struct pair_point_range {
+  int32_t pair              = 0; ///< index into multiparticle_tracker::pairs
+  int32_t npts              = 0; ///< points of the grid task
+  int32_t particle_channels = 1; ///< potential channels the quantum particle's derivative enters: 1 the first, 2 both
+  size_t  first             = 0; ///< first point in the batch's pair list
+  size_t  electron_offset   = 0; ///< point offset of the electron's species task in the batch arrays
+  size_t  particle_offset   = 0; ///< point offset of the particle's species task in the batch arrays
+};
+
 /// One batch of the species-task list: every species task of a run of grid
 /// tasks, as many grid tasks as fit in device memory at once
 struct multiparticle_batch {
@@ -127,8 +139,10 @@ struct multiparticle_batch {
   size_t npts_intra = 0; ///< points of the species carrying intra functionals, the prefix [0, npts_intra)
   std::vector<XCTask>::iterator grid_task_begin;      ///< its first grid task, in the load balancer's list
   std::vector<XCTask>::iterator grid_task_end;        ///< one past its last grid task
-  std::vector<point_work_range> intra_point_ranges;   ///< per species: its points in the batch; empty if it has no intra functional
-  std::vector<task_work_range>  task_work_ranges;     ///< the runs of comparable nbe the per-point kernels launch over, in list order
+  std::vector<point_work_range> intra_point_ranges;     ///< per species: its points in the batch; empty if it has no intra functional
+  std::vector<task_work_range>  task_work_ranges;       ///< the runs of comparable nbe the per-point kernels launch over, in list order
+  std::vector<pair_point_range> pair_point_ranges;      ///< the batch's pairs, ordered by functional then by pair
+  std::vector<point_work_range> pair_functional_ranges; ///< per distinct pair functional, its points in the pair list
 };
 
 /// The species-task list of one call, with its batches
@@ -878,13 +892,19 @@ struct XCDeviceData {
     GAUXC_GENERIC_EXCEPTION("MultiParticle buffers NYI for this XCDeviceData");
   }
 
-  /// Carve and zero one intra XC energy accumulator per species
-  virtual void allocate_static_data_multiparticle( size_t ) {
+  /// Carve and zero one intra XC energy accumulator per species and one pair
+  /// energy accumulator per pair
+  virtual void allocate_static_data_multiparticle( size_t, size_t ) {
     GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
   }
 
   /// Copy the per-species intra XC energies back to the host
   virtual void retrieve_intra_exc( double*, size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
+  }
+
+  /// Copy the per-pair energies back to the host
+  virtual void retrieve_pair_exc( double*, size_t ) {
     GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
   }
 

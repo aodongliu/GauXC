@@ -225,6 +225,27 @@ bool LocalDeviceWorkDriver::supports_multiparticle() const {
   return pimpl_->supports_multiparticle();
 }
 
+void LocalDeviceWorkDriver::gather_pair_densities( XCDeviceData* device_data ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->gather_pair_densities(device_data);
+}
+
+void LocalDeviceWorkDriver::eval_pair_functional( const functional_type& func,
+  XCDeviceData* device_data, point_work_range range ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->eval_pair_functional(func, device_data, range);
+}
+
+void LocalDeviceWorkDriver::scatter_pair_potential( XCDeviceData* device_data ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->scatter_pair_potential(device_data);
+}
+
+void LocalDeviceWorkDriver::sum_pair_energy( XCDeviceData* device_data ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->sum_pair_energy(device_data);
+}
+
 void LocalDeviceWorkDriver::exx_ek_shellpair_collision( double eps_E, double eps_K, 
   XCDeviceData* device_data, host_task_iterator tb, host_task_iterator te,
   const ShellPairCollection<double>& shpairs ) {

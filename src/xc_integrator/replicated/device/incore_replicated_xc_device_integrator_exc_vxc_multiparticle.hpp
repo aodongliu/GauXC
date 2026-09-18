@@ -32,7 +32,7 @@ namespace detail {
  * (grid task, species): the species tasks. Per batch:
  *   A  density and variables, over the whole list
  *   B  intra XC, over each intra species' points  [writes vrho there]
- *   C  the pair stage, over the batch's pairs     [adds into vrho; not evaluated yet]
+ *   C  the pair stage, over the batch's pairs     [adds into vrho]
  *   D  Z matrix and VXC, over the whole list
  */
 
@@ -348,6 +348,10 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     }
   }
 
+  // The distinct pair functionals of the call, matched by identity: the pair
+  // list is grouped by them and one evaluation serves a whole group
+  std::vector<const functional_type*> pair_functionals;
+
   std::vector<char> is_pair_electron( nspecies, 0 );
   for( size_t i = 0; i < npairs; ++i ) {
     const auto& pair_functional = functional_spec.inter_functionals[i];
@@ -367,6 +371,11 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
       tracker.species[pair.electron].participates = true;
       tracker.species[pair.particle].participates = true;
       is_pair_electron[pair.electron] = 1;
+
+      const auto* functional = pair_functional.functionals.front().get();
+      auto entry = std::find( pair_functionals.begin(), pair_functionals.end(), functional );
+      pair.functional_group = std::distance( pair_functionals.begin(), entry );
+      if( entry == pair_functionals.end() ) pair_functionals.push_back( functional );
     }
   }
 
@@ -417,7 +426,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     two_channel ? Pz_union.data() : nullptr, two_channel ? nbf_union : 0,
     nullptr, 0, nullptr, 0, union_basis );
   device_data.zero_exc_vxc_integrands( shape.terms );
-  device_data.allocate_static_data_multiparticle( nspecies );
+  device_data.allocate_static_data_multiparticle( nspecies, npairs );
 
   BasisSetMap union_basis_map( union_basis, this->load_balancer_->molecule() );
 
@@ -429,11 +438,15 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   // The trace: the shape of the list, per batch
   if( multiparticle_device_detail::trace_enabled() )
   for( const auto& batch : layout.batches ) {
+    size_t npts_pair = 0;
+    for( const auto& range : batch.pair_point_ranges ) npts_pair += size_t( range.npts );
     std::cout << "[GAUXC MULTIPARTICLE] batch species_tasks="
               << (batch.last_task - batch.first_task)
               << " npts_grid=" << batch.npts_grid
               << " npts_total=" << batch.npts_total
               << " npts_intra=" << batch.npts_intra
+              << " npts_pair=" << npts_pair
+              << " pair_ranges=" << batch.pair_point_ranges.size()
               << " work_ranges=" << batch.task_work_ranges.size();
     for( const auto& range : batch.task_work_ranges )
       std::cout << " [" << range.count << "@nbe<=" << range.nbe_max << "]";
@@ -491,7 +504,22 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
       nlaunch += 3;
     }
 
-    //-------------- C: the pair stage; adds into vrho. Not evaluated yet ---
+    //-------------- C: the pair stage, over the batch's pairs --------------
+    //                 ADDS into vrho, so it must follow B. One evaluation per
+    //                 distinct pair functional, however many pairs share it.
+    if( not batch.pair_point_ranges.empty() ) {
+      lwd->gather_pair_densities( &device_data );
+      for( size_t functional_group = 0;
+           functional_group < batch.pair_functional_ranges.size(); ++functional_group ) {
+        const auto& points = batch.pair_functional_ranges[functional_group];
+        if( not points.count ) continue;
+        lwd->eval_pair_functional( *pair_functionals[functional_group], &device_data, points );
+        nlaunch++;
+      }
+      lwd->scatter_pair_potential( &device_data );
+      lwd->sum_pair_energy( &device_data );
+      nlaunch += 3;
+    }
 
     //-------------- D: Z matrix and VXC over the whole list ---------------
     if( tracker.do_vxc ) {
@@ -539,6 +567,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
       two_channel ? nbf_union : 0, nullptr, 0, nullptr, 0 );
     rt.device_backend()->master_queue_synchronize();
     device_data.retrieve_intra_exc( intra_exc, nspecies );
+    device_data.retrieve_pair_exc( inter_pair_exc, npairs );
   });
 
   // Cut the union VXC into per-species blocks; a particle carried in one

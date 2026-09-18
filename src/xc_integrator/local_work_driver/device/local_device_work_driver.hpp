@@ -135,6 +135,14 @@ public:
 
   bool supports_multiparticle() const;
 
+  /// The multiparticle pair stage: one gather, one evaluation per distinct pair
+  /// functional, one scatter and one energy reduction, over the batch's pairs
+  void gather_pair_densities( XCDeviceData* );
+  void eval_pair_functional( const functional_type&, XCDeviceData*,
+    point_work_range );
+  void scatter_pair_potential( XCDeviceData* );
+  void sum_pair_energy( XCDeviceData* );
+
 private: 
 
   pimpl_type pimpl_; ///< Implementation

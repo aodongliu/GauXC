@@ -97,6 +97,27 @@ struct LocalDeviceWorkDriverPIMPL {
 
   virtual bool supports_multiparticle() const { return false; }
 
+  /// Gather every pair's densities and grid weights into the pair arrays
+  virtual void gather_pair_densities( XCDeviceData* ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle pair XC is NYI for this LWD");
+  }
+
+  /// Evaluate one pair functional over the point range its pairs own
+  virtual void eval_pair_functional( const functional_type&, XCDeviceData*,
+    point_work_range ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle pair XC is NYI for this LWD");
+  }
+
+  /// Weight every pair's potential and add it into its species' channels
+  virtual void scatter_pair_potential( XCDeviceData* ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle pair XC is NYI for this LWD");
+  }
+
+  /// Add every pair's energy into its accumulator
+  virtual void sum_pair_energy( XCDeviceData* ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle pair EXC is NYI for this LWD");
+  }
+
 };
 
 }

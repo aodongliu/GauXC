@@ -16,6 +16,7 @@
 #include "device/common/device_blas.hpp"
 #include "device/common/xc_functional_eval_wrapper.hpp"
 #include "device/common/uvvars.hpp"
+#include "device/common/multiparticle_pair.hpp"
 #include "device/common/pack_submat.hpp"
 #include "device/common/inc_potential.hpp"
 #include "device/common/symmetrize_mat.hpp"
@@ -1591,6 +1592,100 @@ void AoSScheme1Base::eval_kern_exc_vxc_mgga( const functional_type& func,
   scale_mgga_output(npts, base_stack, data->device_backend_, func.needs_laplacian(), is_pol);
   
   data->device_backend_->check_error("exc_vxc mgga" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
+void AoSScheme1Base::gather_pair_densities( XCDeviceData* _data ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+
+  auto& pair_stack = data->pair_stack;
+  if( not pair_stack.nranges ) return;
+
+  // The polarized shape carries (rho_alpha, rho_beta) per point, whose sum is a
+  // species' total density; the one-channel shape carries the total in den_s
+  const bool    two_channel = data->allocated_terms.ks_scheme != RKS;
+  const double* den_z       = two_channel ? data->base_stack.den_z_eval_device
+                                          : nullptr;
+
+  GauXC::gather_pair_densities( pair_stack.nranges, pair_stack.ranges_device,
+    data->base_stack.den_s_eval_device, den_z, pair_stack.density_device,
+    data->device_backend_->queue() );
+
+  data->device_backend_->check_error("gather pair densities" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
+void AoSScheme1Base::eval_pair_functional( const functional_type& func,
+  XCDeviceData* _data, point_work_range range ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+  if( not func.is_lda() )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle GGA/mGGA inter-XC is not implemented");
+
+  auto& pair_stack = data->pair_stack;
+  const size_t first = range.first;
+  const size_t npts  = range.count ? range.count : pair_stack.npts - first;
+  if( not npts ) return;
+
+  // The pair list is grouped by functional, so this covers exactly the pairs
+  // that carry `func`
+  GauXC::eval_kern_exc_vxc_lda( func, npts, pair_stack.density_device + 2*first,
+    pair_stack.eps_device + first, pair_stack.vrho_device + 2*first,
+    data->device_backend_->queue() );
+
+  data->device_backend_->check_error("eval pair functional" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
+void AoSScheme1Base::scatter_pair_potential( XCDeviceData* _data ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+
+  auto& pair_stack = data->pair_stack;
+  if( not pair_stack.nranges ) return;
+
+  auto& base_stack = data->base_stack;
+  const bool two_channel = data->allocated_terms.ks_scheme != RKS;
+  double* vrho_pos = two_channel ? base_stack.vrho_pos_eval_device
+                                 : base_stack.vrho_eval_device;
+  double* vrho_neg = two_channel ? base_stack.vrho_neg_eval_device : nullptr;
+
+  GauXC::scatter_pair_potential( pair_stack.nranges, pair_stack.ranges_device,
+    base_stack.weights_device, pair_stack.vrho_device, vrho_pos, vrho_neg,
+    data->device_backend_->queue() );
+
+  data->device_backend_->check_error("scatter pair potential" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
+void AoSScheme1Base::sum_pair_energy( XCDeviceData* _data ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+  if( not data->multiparticle_static.pair_exc_device )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: pair EXC accumulator not allocated");
+
+  auto& pair_stack = data->pair_stack;
+  if( not pair_stack.nranges ) return;
+
+  GauXC::sum_pair_energy( pair_stack.nranges, pair_stack.ranges_device,
+    data->base_stack.weights_device, pair_stack.eps_device,
+    pair_stack.density_device, data->multiparticle_static.pair_exc_device,
+    data->device_backend_->queue() );
+
+  data->device_backend_->check_error("sum pair energy" __FILE__ ": " + std::to_string(__LINE__));
 }
 
 

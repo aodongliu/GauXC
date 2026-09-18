@@ -664,76 +664,6 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
 
 }
 
-#ifdef GAUXC_HAS_DEVICE
-// Every species in the list with the pair functionals set up but not yet
-// evaluated: the electron reproduces the single-species device path, the
-// protons come back with zero energy and zero VXC
-void test_neo_device_pair_stage_absent( const RuntimeEnvironment& rt,
-  std::string reference_file, functional_type& func, functional_type& epc_func,
-  PruningScheme pruning_scheme ) {
-
-  using matrix_type = Eigen::MatrixXd;
-
-  auto ref = read_neo_reference( reference_file );
-  const size_t nprot    = ref.nprot();
-  const size_t nspecies = ref.nspecies();
-
-  auto mg = MolGridFactory::create_default_molgrid(ref.mol, pruning_scheme,
-    BatchSize(512), RadialQuad::MuraKnowles, AtomicGridSizeDefault::UltraFineGrid);
-  LoadBalancerFactory lb_factory( ExecutionSpace::Host, "Default" );
-  MolecularWeightsFactory mw_factory( ExecutionSpace::Device, "Default",
-    MolecularWeightsSettings{} );
-  auto mw = mw_factory.get_instance();
-  XCIntegratorFactory<matrix_type> integrator_factory( ExecutionSpace::Device,
-    "Replicated", "Default", "Default", "Default" );
-
-  // The electron alone, on the single-species path
-  auto lb_electron = lb_factory.get_instance( rt, ref.mol, mg, ref.bases[0] );
-  mw.modify_weights( lb_electron );
-  auto integrator_electron = integrator_factory.get_instance( func, lb_electron );
-  double EXC_electron = 0.;
-  matrix_type VXC_electron, VXCz_electron;
-  if( ref.uks ) std::tie( EXC_electron, VXC_electron, VXCz_electron ) =
-    integrator_electron.eval_exc_vxc( ref.Ps, ref.Pz );
-  else std::tie( EXC_electron, VXC_electron ) = integrator_electron.eval_exc_vxc( ref.Ps );
-
-  // Every species, with one pair per proton set up
-  auto lb = lb_factory.get_instance( rt, ref.mol, mg, ref.bases );
-  mw.modify_weights( lb );
-  auto integrator = integrator_factory.get_instance( func, lb );
-
-  MultiParticleFunctionalSpec spec;
-  spec.intra_functionals.resize( nspecies );
-  spec.intra_functionals[0].push_back( std::make_shared<functional_type>(func) );
-  for( size_t i = 0; i < nprot; ++i )
-    spec.inter_functionals.push_back( MultiParticlePairFunctional{ 0, i+1,
-      { std::make_shared<functional_type>(epc_func) } } );
-
-  MultiParticleXCTerms terms;
-  for( size_t p = 0; p < nspecies; ++p ) {
-    terms.active_intra.push_back(p);
-    terms.vxc_targets.push_back(p);
-  }
-  for( size_t j = 0; j < nprot; ++j ) terms.active_inter.push_back(j);
-
-  auto densities = ref.densities();
-  auto result = integrator.eval_exc_vxc( densities, spec, terms );
-
-  REQUIRE( result.intra_exc.size() == nspecies );
-  CHECK( result.intra_exc[0] == Approx(EXC_electron).epsilon(1e-10).margin(1e-14) );
-  CHECK( (result.VXCs[0] - VXC_electron).norm() / ref.bases[0].nbf() < 1e-10 );
-  if( ref.uks )
-    CHECK( (result.VXCz[0] - VXCz_electron).norm() / ref.bases[0].nbf() < 1e-10 );
-  for( size_t i = 0; i < nprot; ++i ) {
-    INFO( "protonic species " << i );
-    CHECK( result.intra_exc[i+1] == 0. );
-    CHECK( result.inter_pair_exc[i] == 0. );
-    CHECK( result.VXCs[i+1].norm() == 0. );
-    if( ref.prot_uks[i] ) CHECK( result.VXCz[i+1].norm() == 0. );
-  }
-}
-#endif
-
 void test_neo_integrator(std::string reference_file, functional_type& func,
   functional_type& epc_func, PruningScheme pruning_scheme) {
 
@@ -751,9 +681,20 @@ void test_neo_integrator(std::string reference_file, functional_type& func,
 #endif
 
 #ifdef GAUXC_HAS_DEVICE
-  SECTION( "Device, pair stage absent" ) {
-    test_neo_device_pair_stage_absent( rt, reference_file, func, epc_func,
-      pruning_scheme );
+  // Only the Incore integrator runs the multiparticle path: ShellBatched and
+  // the MAGMA local work driver refuse it with an explicit NYI throw
+  SECTION( "Device" ) {
+    SECTION( "Incore - MPI Reduction" ) {
+      test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
+        epc_func, pruning_scheme, false );
+    }
+
+    #ifdef GAUXC_HAS_CUTLASS
+    SECTION( "Incore - MPI Reduction - CUTLASS" ) {
+      test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
+        epc_func, pruning_scheme, false, "Scheme1-CUTLASS" );
+    }
+    #endif
   }
 #endif
 }

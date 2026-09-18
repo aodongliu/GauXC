@@ -29,6 +29,7 @@ target_sources(gauxc PRIVATE
   kernels/symmetrize_mat.cu
   kernels/increment_exc_grad.cu
   kernels/exx_ek_screening_bfn_stats.cu
+  kernels/multiparticle_pair.cu
 )
 
 # Check if CMAKE_CUDA_ARCHITECTURES is set

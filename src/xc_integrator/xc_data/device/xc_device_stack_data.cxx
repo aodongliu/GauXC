@@ -63,8 +63,11 @@ device_queue XCDeviceStackData::queue() {
 
 void XCDeviceStackData::reset_allocations() {
   grid_npts_ = 0;
+  ntasks_intra_ = 0;
   task_grid_offset_.clear();
   task_work_ranges_.clear();
+  task_grid_offset_device_ = nullptr;
+  w_times_f_device_        = nullptr;
   multiparticle_active_ = false;
   multiparticle_static.reset();
   pair_stack.reset();
@@ -1422,7 +1425,8 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
   std::vector<size_t> task_bytes( species_tasks.size() );
   for( size_t task = 0; task < species_tasks.size(); ++task )
     task_bytes[task] = get_mem_req( terms, species_tasks[task] )
-      + sizeof(double) * size_t( species_tasks[task].npts );  // its weights
+      + sizeof(double) * size_t( species_tasks[task].npts )   // its weights
+      + ( terms.exc_grad ? sizeof(size_t) : 0 );               // its grid offset
   shared_grid_ = shared_grid_on_entry;
 
   // ---- 3. Greedy batch partition over whole grid tasks, as generate_buffers
@@ -1433,8 +1437,8 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
 
   // Per grid task: one copy of its coordinates, its species tasks, the pair
   // stage's arrays for every pair live on it, and slack for the allocator's
-  // alignment
-  constexpr size_t grid_bytes_per_point  = 3 * sizeof(double);
+  // alignment. The gradient adds w_times_f, one double per grid point
+  const size_t     grid_bytes_per_point  = ( terms.exc_grad ? 4 : 3 ) * sizeof(double);
   constexpr size_t pair_bytes_per_point  = 5 * sizeof(double);
   constexpr size_t alignment_slack_bytes = 32 * 256;
 
@@ -1545,7 +1549,7 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
       for( auto size_class : size_classes ) add_work_range( species, size_class );
       batch.intra_point_ranges[species] = point_work_range{ first_point, npts - first_point };
     }
-    batch.npts_intra = npts;
+    batch.ntasks_intra = layout.species_tasks.size() - batch.first_task;
     // Add possibly 3 size_classes (tiny, small, general) for all other species
     for( auto size_class : size_classes ) add_work_range( nspecies, size_class );
 
@@ -1587,6 +1591,7 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
         range.first             = npts_pair;
         range.electron_offset   = task_point_offset[electron_task];
         range.particle_offset   = task_point_offset[particle_task];
+        range.grid_offset       = grid_task_point_offset[igrid_in_batch];
         batch.pair_point_ranges.push_back( range );
         npts_pair += size_t( range.npts );
       }
@@ -1619,7 +1624,8 @@ void XCDeviceStackData::generate_buffers_multiparticle(
   auto batch_tasks_begin = layout.species_tasks.begin() + batch.first_task;
   auto batch_tasks_end   = layout.species_tasks.begin() + batch.last_task;
 
-  grid_npts_ = batch.npts_grid;
+  grid_npts_    = batch.npts_grid;
+  ntasks_intra_ = batch.ntasks_intra;
   task_grid_offset_.assign( layout.grid_offsets.begin() + batch.first_task,
                                layout.grid_offsets.begin() + batch.last_task );
   task_work_ranges_ = batch.task_work_ranges;
@@ -1680,6 +1686,16 @@ void XCDeviceStackData::generate_buffers_multiparticle(
     }
   }
 
+  // ---- 3b. EXC gradient: the task grid offsets and w_times_f
+  if( terms.exc_grad ) {
+    auto [ grad_ptr, grad_bytes ] = buf;
+    buffer_adaptor grad_mem( grad_ptr, grad_bytes );
+    task_grid_offset_device_ = grad_mem.aligned_alloc<size_t>(
+      task_grid_offset_.size(), 256, csl );
+    w_times_f_device_        = grad_mem.aligned_alloc<double>( batch.npts_grid, 256, csl );
+    buf = device_buffer_t{ grad_mem.stack(), grad_mem.nleft() };
+  }
+
   // ---- 4. Pack: the grid and the pair point ranges here, once; the species
   //         tasks through the per-task packer, which skips the grid
   {
@@ -1713,6 +1729,9 @@ void XCDeviceStackData::generate_buffers_multiparticle(
     if( pair_stack.nranges )
       device_backend_->copy_async( pair_stack.nranges, batch.pair_point_ranges.data(),
         pair_stack.ranges_device, "multiparticle pair ranges" );
+    if( task_grid_offset_device_ )
+      device_backend_->copy_async( task_grid_offset_.size(), task_grid_offset_.data(),
+        task_grid_offset_device_, "multiparticle task grid offsets" );
     device_backend_->master_queue_synchronize();
   }
 

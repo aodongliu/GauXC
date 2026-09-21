@@ -38,6 +38,105 @@ namespace detail {
 
 namespace multiparticle_device_detail {
 
+/// The species and the pairs of one call: the tracker, every intra species'
+/// functional and the call's distinct pair functionals
+struct multiparticle_call {
+  multiparticle_tracker               tracker;           ///< the species and the pairs of the call
+  std::vector<const functional_type*> intra_functionals; ///< per species: its intra functional, null without one
+  std::vector<const functional_type*> pair_functionals;  ///< the call's distinct pair functionals, indexed by multiparticle_pair::functional_group
+  std::vector<size_t>                 intra_species;     ///< the species carrying an intra functional, in species order
+  std::vector<char>                   is_pair_electron;  ///< per species: it is the electron of an active pair
+};
+
+/// Resolve one call: a species participates through an active intra functional
+/// or an active pair; pairs are grouped by their distinct functionals.
+/// `vxc_is_output` false: every participating species builds its potential, none is returned
+template <typename DensityList>
+inline multiparticle_call resolve_multiparticle_call( const LoadBalancer& load_balancer,
+  const DensityList& densities,
+  const MultiParticleFunctionalSpec& functional_spec,
+  const MultiParticleXCTerms& terms, bool vxc_is_output ) {
+
+  const size_t nspecies = densities.size();
+  const size_t npairs   = functional_spec.inter_functionals.size();
+
+  std::vector<bool> active_intra( nspecies, false );
+  std::vector<bool> active_inter( npairs, false );
+  std::vector<bool> build_vxc( nspecies, not vxc_is_output );
+  for( auto p : terms.active_intra ) active_intra[p] = true;
+  for( auto i : terms.active_inter ) active_inter[i] = true;
+  if( vxc_is_output )
+    for( auto p : terms.vxc_targets ) build_vxc[p] = true;
+
+  multiparticle_call call;
+  auto& tracker = call.tracker;
+  tracker.species.resize( nspecies );
+  tracker.pairs.resize( npairs );
+  tracker.do_vxc = vxc_is_output ? not terms.vxc_targets.empty() : true;
+  call.intra_functionals.assign( nspecies, nullptr );
+  call.is_pair_electron.assign( nspecies, 0 );
+
+  for( size_t p = 0; p < nspecies; ++p ) {
+    const auto& basis   = load_balancer.basis(p);
+    auto&       species = tracker.species[p];
+    species.index     = p;
+    species.nbf       = static_cast<int32_t>( basis.nbf() );
+    species.nshells   = static_cast<int32_t>( basis.nshells() );
+    species.ks_scheme = densities[p].Pz ? UKS : RKS;
+    species.xc_approx = LDA;
+    species.build_vxc = build_vxc[p];
+
+    const auto* functionals = p < functional_spec.intra_functionals.size() ?
+      &functional_spec.intra_functionals[p] : nullptr;
+
+    if( active_intra[p] and functionals and not functionals->empty() ) {
+      // One intra functional per species
+      if( functionals->size() > 1 )
+        GAUXC_GENERIC_EXCEPTION("Device MultiParticle: multiple intra functionals per species NYI");
+
+      const auto& functional = *functionals->front();
+      if( functional.is_mgga() )
+        GAUXC_GENERIC_EXCEPTION("MultiParticle mGGA intra-XC is not implemented");
+
+      species.has_intra_functional = true;
+      species.participates         = true;
+      species.xc_approx            = functional.is_gga() ? GGA : LDA;
+      call.intra_functionals[p]    = functionals->front().get();
+      call.intra_species.push_back(p);
+    }
+  }
+
+  for( size_t i = 0; i < npairs; ++i ) {
+    const auto& pair_functional = functional_spec.inter_functionals[i];
+    auto&       pair            = tracker.pairs[i];
+    pair.electron = pair_functional.electron;
+    pair.particle = pair_functional.particle;
+    pair.active   = active_inter[i] and not pair_functional.functionals.empty();
+
+    for( const auto& functional : pair_functional.functionals )
+      if( functional->is_gga() or functional->is_mgga() )
+        GAUXC_GENERIC_EXCEPTION("MultiParticle GGA/mGGA inter-XC is not implemented");
+    // One functional per pair
+    if( pair.active and pair_functional.functionals.size() > 1 )
+      GAUXC_GENERIC_EXCEPTION("Device MultiParticle: multiple inter functionals per pair NYI");
+
+    if( pair.active ) {
+      tracker.species[pair.electron].participates = true;
+      tracker.species[pair.particle].participates = true;
+      call.is_pair_electron[pair.electron] = 1;
+
+      const auto* functional = pair_functional.functionals.front().get();
+      auto entry = std::find( call.pair_functionals.begin(),
+        call.pair_functionals.end(), functional );
+      pair.functional_group = std::distance( call.pair_functionals.begin(), entry );
+      if( entry == call.pair_functionals.end() )
+        call.pair_functionals.push_back( functional );
+    }
+  }
+
+  return call;
+}
+
 /// Whether a quantum particle's density can be carried in one channel exactly:
 /// high spin (Ps == Pz bitwise), LD == nbf, no intra functional of its own, and
 /// not the electron of an active pair (the pair potential reaches both of the
@@ -303,81 +402,10 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   if( not lwd )
     GAUXC_GENERIC_EXCEPTION("MultiParticle EXC/VXC requires a device local work driver");
 
-  std::vector<bool> active_intra( nspecies, false );
-  std::vector<bool> active_inter( npairs, false );
-  std::vector<bool> build_vxc( nspecies, false );
-  for( auto p : terms.active_intra ) active_intra[p] = true;
-  for( auto i : terms.active_inter ) active_inter[i] = true;
-  for( auto p : terms.vxc_targets )  build_vxc[p]    = true;
-
-  // ---- The species and the pairs of this call, resolved once. A species
-  //      participates through an active intra functional or an active pair.
-  multiparticle_tracker tracker;
-  tracker.species.resize( nspecies );
-  tracker.pairs.resize( npairs );
-  tracker.do_vxc = not terms.vxc_targets.empty();
-
-  std::vector<const functional_type*> intra_functional( nspecies, nullptr );
-
-  for( size_t p = 0; p < nspecies; ++p ) {
-    const auto& basis   = this->load_balancer_->basis(p);
-    auto&       species = tracker.species[p];
-    species.index     = p;
-    species.nbf       = static_cast<int32_t>( basis.nbf() );
-    species.nshells   = static_cast<int32_t>( basis.nshells() );
-    species.ks_scheme = densities[p].Pz ? UKS : RKS;
-    species.xc_approx = LDA;
-    species.build_vxc = build_vxc[p];
-
-    const auto* functionals = p < functional_spec.intra_functionals.size() ?
-      &functional_spec.intra_functionals[p] : nullptr;
-
-    if( active_intra[p] and functionals and not functionals->empty() ) {
-      // One intra functional per species
-      if( functionals->size() > 1 )
-        GAUXC_GENERIC_EXCEPTION("Device MultiParticle: multiple intra functionals per species NYI");
-
-      const auto& functional = *functionals->front();
-      if( functional.is_mgga() )
-        GAUXC_GENERIC_EXCEPTION("MultiParticle mGGA intra-XC is not implemented");
-
-      species.has_intra_functional = true;
-      species.participates         = true;
-      species.xc_approx            = functional.is_gga() ? GGA : LDA;
-      intra_functional[p]          = functionals->front().get();
-    }
-  }
-
-  // The distinct pair functionals of the call, matched by identity: the pair
-  // list is grouped by them and one evaluation serves a whole group
-  std::vector<const functional_type*> pair_functionals;
-
-  std::vector<char> is_pair_electron( nspecies, 0 );
-  for( size_t i = 0; i < npairs; ++i ) {
-    const auto& pair_functional = functional_spec.inter_functionals[i];
-    auto&       pair            = tracker.pairs[i];
-    pair.electron = pair_functional.electron;
-    pair.particle = pair_functional.particle;
-    pair.active   = active_inter[i] and not pair_functional.functionals.empty();
-
-    for( const auto& functional : pair_functional.functionals )
-      if( functional->is_gga() or functional->is_mgga() )
-        GAUXC_GENERIC_EXCEPTION("MultiParticle GGA/mGGA inter-XC is not implemented");
-    // One functional per pair
-    if( pair.active and pair_functional.functionals.size() > 1 )
-      GAUXC_GENERIC_EXCEPTION("Device MultiParticle: multiple inter functionals per pair NYI");
-
-    if( pair.active ) {
-      tracker.species[pair.electron].participates = true;
-      tracker.species[pair.particle].participates = true;
-      is_pair_electron[pair.electron] = 1;
-
-      const auto* functional = pair_functional.functionals.front().get();
-      auto entry = std::find( pair_functionals.begin(), pair_functionals.end(), functional );
-      pair.functional_group = std::distance( pair_functionals.begin(), entry );
-      if( entry == pair_functionals.end() ) pair_functionals.push_back( functional );
-    }
-  }
+  // ---- The species and the pairs of this call, resolved once
+  auto call = multiparticle_device_detail::resolve_multiparticle_call(
+    *this->load_balancer_, densities, functional_spec, terms, true );
+  const auto& tracker = call.tracker;
 
   for( size_t p = 0; p < nspecies; ++p ) intra_exc[p] = 0.0;
   for( size_t i = 0; i < npairs; ++i )   inter_pair_exc[i] = 0.0;
@@ -399,10 +427,6 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   }
 
   // ---- The union basis, the storage shape and the block-diagonal density
-  std::vector<size_t> intra_species;
-  for( size_t p = 0; p < nspecies; ++p )
-    if( tracker.species[p].has_intra_functional ) intra_species.push_back(p);
-
   std::vector<species_basis_range> species_basis_ranges;
   BasisSet<double> union_basis = multiparticle_device_detail::build_union_basis(
     tracker, *this->load_balancer_, species_basis_ranges );
@@ -410,7 +434,8 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   const int32_t nshells_union     = static_cast<int32_t>( union_basis.nshells() );
   const size_t  nbf_union_squared = size_t(nbf_union) * size_t(nbf_union);
 
-  auto shape = multiparticle_device_detail::resolve_storage_shape( tracker, densities, is_pair_electron );
+  auto shape = multiparticle_device_detail::resolve_storage_shape( tracker,
+    densities, call.is_pair_electron );
   shape.terms.exc_vxc = true;
   const bool is_gga      = shape.is_gga();
   const bool two_channel = shape.two_channel();
@@ -444,7 +469,6 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
               << (batch.last_task - batch.first_task)
               << " npts_grid=" << batch.npts_grid
               << " npts_total=" << batch.npts_total
-              << " npts_intra=" << batch.npts_intra
               << " npts_pair=" << npts_pair
               << " pair_ranges=" << batch.pair_point_ranges.size()
               << " work_ranges=" << batch.task_work_ranges.size();
@@ -491,14 +515,14 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     }
 
     //-------------- B: intra XC, one call per intra species over its points --
-    for( size_t p : intra_species ) {
+    for( size_t p : call.intra_species ) {
       const auto& points = batch.intra_point_ranges[p];
       if( not points.count ) continue;
       // The kernel follows the species' functional, not the storage shape
       if( tracker.species[p].xc_approx == GGA )
-        lwd->eval_kern_exc_vxc_gga( *intra_functional[p], &device_data, points );
+        lwd->eval_kern_exc_vxc_gga( *call.intra_functionals[p], &device_data, points );
       else
-        lwd->eval_kern_exc_vxc_lda( *intra_functional[p], &device_data, points );
+        lwd->eval_kern_exc_vxc_lda( *call.intra_functionals[p], &device_data, points );
       lwd->inc_exc( &device_data, points, device_data.intra_exc_device_data(p) );
       lwd->inc_nel( &device_data, points );
       nlaunch += 3;
@@ -513,7 +537,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
            functional_group < batch.pair_functional_ranges.size(); ++functional_group ) {
         const auto& points = batch.pair_functional_ranges[functional_group];
         if( not points.count ) continue;
-        lwd->eval_pair_functional( *pair_functionals[functional_group], &device_data, points );
+        lwd->eval_pair_functional( *call.pair_functionals[functional_group], &device_data, points );
         nlaunch++;
       }
       lwd->scatter_pair_potential( &device_data );

@@ -11,6 +11,7 @@
  */
 #pragma once
 #include "device/xc_device_data.hpp"
+#include "device/xc_device_task.hpp"
 #include "device/device_queue.hpp"
 
 namespace GauXC {
@@ -40,5 +41,17 @@ void scatter_pair_potential( size_t nranges, const pair_point_range* ranges,
 void sum_pair_energy( size_t nranges, const pair_point_range* ranges,
   const double* weights, const double* eps, const double* density,
   double* pair_exc, device_queue queue );
+
+
+/// For the first `ntasks` species tasks (those with an intra functional):
+/// w_times_f[grid_offset + i] += eps[i] * rho[i], eps already multiplied by the weight
+void add_intra_w_times_f( size_t ntasks, const XCDeviceTask* device_tasks,
+  const size_t* task_grid_offset, double* w_times_f, device_queue queue );
+
+/// For every pair point range:
+/// w_times_f[grid_offset + i] += w * eps * ( rho_electron + rho_particle )
+void add_pair_w_times_f( size_t nranges, const pair_point_range* ranges,
+  const double* weights, const double* eps, const double* density,
+  double* w_times_f, device_queue queue );
 
 }

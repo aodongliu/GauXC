@@ -246,6 +246,17 @@ void LocalDeviceWorkDriver::sum_pair_energy( XCDeviceData* device_data ) {
   pimpl_->sum_pair_energy(device_data);
 }
 
+void LocalDeviceWorkDriver::accumulate_w_times_f( XCDeviceData* device_data ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->accumulate_w_times_f(device_data);
+}
+
+void LocalDeviceWorkDriver::eval_weight_1st_deriv_contracted(
+  XCDeviceData* device_data, XCWeightAlg alg, const double* w_times_f, size_t npts ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->eval_weight_1st_deriv_contracted(device_data, alg, w_times_f, npts);
+}
+
 void LocalDeviceWorkDriver::exx_ek_shellpair_collision( double eps_E, double eps_K, 
   XCDeviceData* device_data, host_task_iterator tb, host_task_iterator te,
   const ShellPairCollection<double>& shpairs ) {

@@ -81,6 +81,7 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
     point_work_range ) override final;
   void scatter_pair_potential( XCDeviceData* ) override final;
   void sum_pair_energy( XCDeviceData* ) override final;
+  void accumulate_w_times_f( XCDeviceData* ) override final;
 
   // Overridable APIs
   template<bool is_trial>

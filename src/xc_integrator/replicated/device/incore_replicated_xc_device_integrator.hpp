@@ -90,6 +90,13 @@ protected:
   void eval_exc_grad_( int64_t m, int64_t n, const value_type* Ps, int64_t ldps, 
                        const value_type* Pz, int64_t ldpz, value_type* EXC_GRAD, const IntegratorSettingsXC& settings ) override;
 
+  /// Multiparticle (NEO) EXC gradient, on the species-task list
+  void eval_exc_grad_( const std::vector<multiparticle_density>& densities,
+                       const MultiParticleFunctionalSpec& functional_spec,
+                       const MultiParticleXCTerms& terms,
+                       value_type* EXC_GRAD,
+                       const IntegratorSettingsXC& settings ) override;
+
   void eval_exx_( int64_t m, int64_t n, const value_type* P,
                   int64_t ldp, value_type* K, int64_t ldk,
                   const IntegratorSettingsEXX& settings ) override;
@@ -149,6 +156,17 @@ protected:
                             std::vector<multiparticle_vxc>& vxc,
                             value_type* intra_exc,
                             value_type* inter_pair_exc,
+                            const IntegratorSettingsXC& settings,
+                            host_task_iterator task_begin, host_task_iterator task_end,
+                            XCDeviceData& device_data );
+
+  /// Multiparticle (NEO) EXC gradient local work: the species-task list, the
+  /// batch loop and the read-back.
+  void multiparticle_exc_grad_local_work_(
+                            const std::vector<multiparticle_density>& densities,
+                            const MultiParticleFunctionalSpec& functional_spec,
+                            const MultiParticleXCTerms& terms,
+                            value_type* EXC_GRAD,
                             const IntegratorSettingsXC& settings,
                             host_task_iterator task_begin, host_task_iterator task_end,
                             XCDeviceData& device_data );

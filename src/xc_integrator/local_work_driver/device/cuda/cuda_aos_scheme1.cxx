@@ -77,6 +77,33 @@ void CudaAoSScheme1<Base>::eval_weight_1st_deriv_contracted( XCDeviceData* _data
     scheme1_stack.dist_nearest_device, base_stack.eps_eval_device, static_stack.exc_grad_device, *device_backend->master_stream );
 }
 
+/// Same as above, reading the given w_times_f over `npts` grid points
+template <typename Base>
+void CudaAoSScheme1<Base>::eval_weight_1st_deriv_contracted( XCDeviceData* _data,
+  XCWeightAlg alg, const double* w_times_f, size_t npts ) {
+  if( alg != XCWeightAlg::SSF ) {
+    GAUXC_GENERIC_EXCEPTION("Weight Algorithm NYI for CUDA AoS Scheme1");
+  }
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  auto device_backend = dynamic_cast<CUDABackend*>(data->device_backend_);
+  if( !device_backend ) GAUXC_BAD_BACKEND_CAST();
+
+  // Compute distances from grid to atomic centers
+  const auto ldatoms = data->get_ldatoms();
+  auto base_stack    = data->base_stack;
+  auto static_stack  = data->static_stack;
+  auto scheme1_stack = data->scheme1_stack;
+  cuda_aos_scheme1_weight_1st_deriv_wrapper( static_cast<int32_t>(npts),
+    data->global_dims.natoms,
+    base_stack.points_x_device, base_stack.points_y_device, base_stack.points_z_device,
+    static_stack.rab_device, ldatoms, static_stack.coords_device, 
+    scheme1_stack.dist_scratch_device, ldatoms, scheme1_stack.iparent_device, 
+    scheme1_stack.dist_nearest_device, w_times_f, static_stack.exc_grad_device,
+    *device_backend->master_stream );
+}
+
 
 template struct CudaAoSScheme1<AoSScheme1Base>;
 #ifdef GAUXC_HAS_MAGMA

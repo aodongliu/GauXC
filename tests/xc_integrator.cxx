@@ -489,13 +489,12 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
 
   matrix_type VXC_ref, VXCz_ref;
   std::vector<matrix_type> prot_VXCs_ref(nprot), prot_VXCz_ref(nprot);
-  std::vector<double> prot_EXC_ref(nprot), EPC_EXC_ref(nprot), EXC_GRAD_ref;
+  std::vector<double> prot_EXC_ref(nprot), EPC_EXC_ref(nprot);
+  std::vector<double> EXC_GRAD_ref_HellFey(3*mol.size()), EXC_GRAD_ref_Full(3*mol.size());
   double EXC_ref = 0.;
-  bool has_exc_grad = false;
 
   {
     HighFive::File file( reference_file, HighFive::File::ReadOnly );
-    has_exc_grad = file.exist("/EXC_GRAD");
 
     auto read_matrix = [&]( std::string name ) {
       auto dset = file.getDataSet( name );
@@ -517,10 +516,8 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
       file.getDataSet( neo_dataset("/EPC_EXC_", i)      ).read( &EPC_EXC_ref[i]  );
     }
 
-    if( has_exc_grad ) {
-      EXC_GRAD_ref.resize( 3*mol.size() );
-      file.getDataSet("/EXC_GRAD").read( EXC_GRAD_ref.data() );
-    }
+    file.getDataSet("/EXC_GRAD").read( EXC_GRAD_ref_Full.data() );
+    file.getDataSet("/EXC_GRAD_HELLFEY").read( EXC_GRAD_ref_HellFey.data() );
   }
 
   auto mg = MolGridFactory::create_default_molgrid(mol, pruning_scheme,
@@ -604,13 +601,18 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
     EXC_GRAD_full = neo_exc_grad( integrator, true );
     REQUIRE( EXC_GRAD_full.size() == 3*mol.size() );
 
-    if( has_exc_grad ) {
-      using map_type = Eigen::Map<Eigen::MatrixXd>;
+    using map_type = Eigen::Map<Eigen::MatrixXd>;
+    auto check_exc_grad = [&]( std::vector<double>& EXC_GRAD, std::vector<double>& EXC_GRAD_ref ) {
       map_type EXC_GRAD_ref_map( EXC_GRAD_ref.data(), mol.size(), 3 );
-      map_type EXC_GRAD_map( EXC_GRAD_full.data(), mol.size(), 3 );
+      map_type EXC_GRAD_map( EXC_GRAD.data(), mol.size(), 3 );
       auto EXC_GRAD_diff_nrm = (EXC_GRAD_ref_map - EXC_GRAD_map).norm();
       CHECK( EXC_GRAD_diff_nrm / std::sqrt(3.0*mol.size()) < 1e-8 );
-    }
+    };
+    check_exc_grad( EXC_GRAD_full, EXC_GRAD_ref_Full );
+
+    // Without weight derivatives
+    auto EXC_GRAD_HellFey = neo_exc_grad( integrator, false );
+    check_exc_grad( EXC_GRAD_HellFey, EXC_GRAD_ref_HellFey );
   }
 
   // The answer does not depend on the order the protonic species are given in
@@ -686,13 +688,13 @@ void test_neo_integrator(std::string reference_file, functional_type& func,
   SECTION( "Device" ) {
     SECTION( "Incore - MPI Reduction" ) {
       test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
-        epc_func, pruning_scheme, false );
+        epc_func, pruning_scheme, true );
     }
 
     #ifdef GAUXC_HAS_CUTLASS
     SECTION( "Incore - MPI Reduction - CUTLASS" ) {
       test_neo_xc_integrator( ExecutionSpace::Device, rt, reference_file, func,
-        epc_func, pruning_scheme, false, "Scheme1-CUTLASS" );
+        epc_func, pruning_scheme, true, "Scheme1-CUTLASS" );
     }
     #endif
   }

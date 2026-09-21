@@ -78,8 +78,7 @@ __global__ void sum_pair_energy_kernel( size_t nranges,
   double energy = 0.0;
   for( int i = threadIdx.x; i < range.npts; i += blockDim.x ) {
     const size_t k = range.first + i;
-    energy += weights[range.particle_offset + i] * eps[k] *
-              ( density[2*k + 0] + density[2*k + 1] );
+    energy += weights[range.particle_offset + i] * eps[k] * ( density[2*k + 0] + density[2*k + 1] );
   }
   partial[threadIdx.x] = energy;
   __syncthreads();
@@ -89,6 +88,35 @@ __global__ void sum_pair_energy_kernel( size_t nranges,
     __syncthreads();
   }
   if( threadIdx.x == 0 ) atomicAdd( pair_exc + range.pair, partial[0] );
+}
+
+__global__ void add_intra_w_times_f_kernel( size_t ntasks,
+  const XCDeviceTask* device_tasks, const size_t* task_grid_offset,
+  double* w_times_f ) {
+
+  if( blockIdx.x >= ntasks ) return;
+  const auto&  task        = device_tasks[blockIdx.x];
+  const size_t grid_offset = task_grid_offset[blockIdx.x];
+
+  for( size_t i = threadIdx.x; i < task.npts; i += blockDim.x ) {
+    const double density = task.den_z ? task.den_s[i] + task.den_z[i]
+                                      : task.den_s[i];
+    atomicAdd( w_times_f + grid_offset + i, task.eps[i] * density );
+  }
+}
+
+__global__ void add_pair_w_times_f_kernel( size_t nranges,
+  const pair_point_range* ranges, const double* weights, const double* eps,
+  const double* density, double* w_times_f ) {
+
+  if( blockIdx.x >= nranges ) return;
+  const auto& range = ranges[blockIdx.x];
+
+  for( int i = threadIdx.x; i < range.npts; i += blockDim.x ) {
+    const size_t k = range.first + i;
+    atomicAdd( w_times_f + range.grid_offset + i,
+      weights[range.particle_offset + i] * eps[k] * ( density[2*k + 0] + density[2*k + 1] ) );
+  }
 }
 
 
@@ -120,6 +148,25 @@ void sum_pair_energy( size_t nranges, const pair_point_range* ranges,
   cudaStream_t stream = queue.queue_as<util::cuda_stream>();
   sum_pair_energy_kernel<<< nranges, pair_block_size, 0, stream >>>(
     nranges, ranges, weights, eps, density, pair_exc );
+}
+
+void add_intra_w_times_f( size_t ntasks, const XCDeviceTask* device_tasks,
+  const size_t* task_grid_offset, double* w_times_f, device_queue queue ) {
+
+  if( not ntasks ) return;
+  cudaStream_t stream = queue.queue_as<util::cuda_stream>();
+  add_intra_w_times_f_kernel<<< ntasks, pair_block_size, 0, stream >>>(
+    ntasks, device_tasks, task_grid_offset, w_times_f );
+}
+
+void add_pair_w_times_f( size_t nranges, const pair_point_range* ranges,
+  const double* weights, const double* eps, const double* density,
+  double* w_times_f, device_queue queue ) {
+
+  if( not nranges ) return;
+  cudaStream_t stream = queue.queue_as<util::cuda_stream>();
+  add_pair_w_times_f_kernel<<< nranges, pair_block_size, 0, stream >>>(
+    nranges, ranges, weights, eps, density, w_times_f );
 }
 
 }

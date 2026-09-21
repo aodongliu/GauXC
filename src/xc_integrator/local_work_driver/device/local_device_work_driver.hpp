@@ -143,6 +143,14 @@ public:
   void scatter_pair_potential( XCDeviceData* );
   void sum_pair_energy( XCDeviceData* );
 
+  /// Build w_times_f for the multiparticle EXC gradient. Per grid point of the batch:
+  ///   w_times_f = sum_species w * eps * rho + sum_pairs w * eps_pair * (rho_e + rho_p)
+  void accumulate_w_times_f( XCDeviceData* );
+
+  /// Weight derivative contribution to the EXC gradient, reading the given
+  /// w_times_f (`npts` grid points) instead of computing it from den and eps
+  void eval_weight_1st_deriv_contracted( XCDeviceData*, XCWeightAlg, const double* w_times_f, size_t npts );
+
 private: 
 
   pimpl_type pimpl_; ///< Implementation

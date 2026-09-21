@@ -127,6 +127,7 @@ struct pair_point_range {
   size_t  first             = 0; ///< first point in the batch's pair list
   size_t  electron_offset   = 0; ///< point offset of the electron's species task in the batch arrays
   size_t  particle_offset   = 0; ///< point offset of the particle's species task in the batch arrays
+  size_t  grid_offset       = 0; ///< offset of the grid task's points in the batch's grid
 };
 
 /// One batch of the species-task list: every species task of a run of grid
@@ -136,7 +137,7 @@ struct multiparticle_batch {
   size_t last_task  = 0; ///< one past its last species task
   size_t npts_grid  = 0; ///< points of its grid tasks: the size of its one copy of the grid
   size_t npts_total = 0; ///< points summed over its species tasks: the size of every per-point array
-  size_t npts_intra = 0; ///< points of the species carrying intra functionals, the prefix [0, npts_intra)
+  size_t ntasks_intra = 0; ///< number of leading species tasks that have an intra functional
   std::vector<XCTask>::iterator grid_task_begin;      ///< its first grid task, in the load balancer's list
   std::vector<XCTask>::iterator grid_task_end;        ///< one past its last grid task
   std::vector<point_work_range> intra_point_ranges;     ///< per species: its points in the batch; empty if it has no intra functional

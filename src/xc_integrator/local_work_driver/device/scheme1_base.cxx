@@ -1689,6 +1689,31 @@ void AoSScheme1Base::sum_pair_energy( XCDeviceData* _data ) {
 }
 
 
+void AoSScheme1Base::accumulate_w_times_f( XCDeviceData* _data ) {
+
+  auto* data = dynamic_cast<Data*>(_data);
+  if( !data ) GAUXC_BAD_LWD_DATA_CAST();
+
+  if( not data->device_backend_ ) GAUXC_UNINITIALIZED_DEVICE_BACKEND();
+  if( not data->w_times_f_device_ )
+    GAUXC_GENERIC_EXCEPTION("MultiParticle: w_times_f not allocated");
+
+  auto queue = data->device_backend_->queue();
+  data->device_backend_->set_zero_async_master_queue( data->grid_npts_,
+    data->w_times_f_device_, "MultiParticle w_times_f Zero" );
+
+  GauXC::add_intra_w_times_f( data->ntasks_intra_, data->aos_stack.device_tasks,
+    data->task_grid_offset_device_, data->w_times_f_device_, queue );
+
+  auto& pair_stack = data->pair_stack;
+  GauXC::add_pair_w_times_f( pair_stack.nranges, pair_stack.ranges_device,
+    data->base_stack.weights_device, pair_stack.eps_device,
+    pair_stack.density_device, data->w_times_f_device_, queue );
+
+  data->device_backend_->check_error("accumulate w times f" __FILE__ ": " + std::to_string(__LINE__));
+}
+
+
 void AoSScheme1Base::eval_kern_vxc_fxc_lda( const functional_type& func, 
   XCDeviceData* _data ) {
 

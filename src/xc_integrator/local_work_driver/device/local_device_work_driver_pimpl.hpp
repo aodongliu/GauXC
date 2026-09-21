@@ -118,6 +118,17 @@ struct LocalDeviceWorkDriverPIMPL {
     GAUXC_GENERIC_EXCEPTION("MultiParticle pair EXC is NYI for this LWD");
   }
 
+  /// Build w_times_f for the multiparticle EXC gradient
+  virtual void accumulate_w_times_f( XCDeviceData* ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle EXC Gradient is NYI for this LWD");
+  }
+
+  /// Weight derivative contribution to the EXC gradient from a given w_times_f
+  virtual void eval_weight_1st_deriv_contracted( XCDeviceData*, XCWeightAlg,
+    const double*, size_t ) {
+    GAUXC_GENERIC_EXCEPTION("MultiParticle EXC Gradient is NYI for this LWD");
+  }
+
 };
 
 }

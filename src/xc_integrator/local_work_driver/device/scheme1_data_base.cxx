@@ -12,6 +12,8 @@
 #include "scheme1_data_base.hpp"
 #include "buffer_adaptor.hpp"
 
+#include <algorithm>
+
 namespace GauXC {
 
 Scheme1DataBase::~Scheme1DataBase() noexcept = default;
@@ -141,19 +143,20 @@ Scheme1DataBase::device_buffer_t Scheme1DataBase::allocate_dynamic_stack(
 
   required_term_storage reqt(terms);
 
-  // Weights related memory
+  // Weights related memory (per grid point in a multiparticle batch)
+  const size_t npts_weights = std::max( total_npts_task_batch, grid_npts_ );
   if(reqt.grid_to_center_dist_scr) {
     const auto ldatoms = get_ldatoms();
     scheme1_stack.dist_scratch_device = mem.aligned_alloc<double>( 
-      ldatoms * total_npts_task_batch, alignof(double2), csl );
+      ldatoms * npts_weights, alignof(double2), csl );
   }
   if(reqt.grid_to_center_dist_nearest) {
     scheme1_stack.dist_nearest_device = 
-      mem.aligned_alloc<double>( total_npts_task_batch, csl );
+      mem.aligned_alloc<double>( npts_weights, csl );
   }
   if(reqt.grid_to_parent_center) {
     scheme1_stack.iparent_device = 
-      mem.aligned_alloc<int32_t>( total_npts_task_batch, csl );
+      mem.aligned_alloc<int32_t>( npts_weights, csl );
   }
 
   // Compute total dimensions for shell(pair) lists
@@ -292,15 +295,25 @@ void Scheme1DataBase::pack_and_send(
    *         WEIGHTS RELATED MEMORY          *
    *******************************************/
 
+  // A multiparticle batch stores dist_nearest and iparent per grid point
+
   auto w_mem_st = hrt_t::now();
   // Nearest Distance Array
   if(reqt.grid_to_center_dist_nearest) {
 
     // Pack on host
-    dist_nearest_pack.reserve( total_npts_task_batch );
-    for( auto it = task_begin; it != task_end; ++it ) {
-      dist_nearest_pack.insert( dist_nearest_pack.end(), it->points.size(), 
-        it->dist_nearest );
+    if( multiparticle_active_ ) {
+      dist_nearest_pack.assign( grid_npts_, 0.0 );
+      size_t itask = 0;
+      for( auto it = task_begin; it != task_end; ++it, ++itask )
+        std::fill_n( dist_nearest_pack.begin() + task_grid_offset_.at(itask),
+          it->npts, it->dist_nearest );
+    } else {
+      dist_nearest_pack.reserve( total_npts_task_batch );
+      for( auto it = task_begin; it != task_end; ++it ) {
+        dist_nearest_pack.insert( dist_nearest_pack.end(), it->points.size(), 
+          it->dist_nearest );
+      }
     }
 
     // Send to device
@@ -314,9 +327,17 @@ void Scheme1DataBase::pack_and_send(
   if(reqt.grid_to_parent_center) {
 
     // Pack on host
-    iparent_pack.reserve( total_npts_task_batch );
-    for( auto it = task_begin; it != task_end; ++it ) {
-      iparent_pack.insert( iparent_pack.end(), it->points.size(), it->iParent );
+    if( multiparticle_active_ ) {
+      iparent_pack.assign( grid_npts_, 0 );
+      size_t itask = 0;
+      for( auto it = task_begin; it != task_end; ++it, ++itask )
+        std::fill_n( iparent_pack.begin() + task_grid_offset_.at(itask),
+          it->npts, it->iParent );
+    } else {
+      iparent_pack.reserve( total_npts_task_batch );
+      for( auto it = task_begin; it != task_end; ++it ) {
+        iparent_pack.insert( iparent_pack.end(), it->points.size(), it->iParent );
+      }
     }
 
     // Send to device

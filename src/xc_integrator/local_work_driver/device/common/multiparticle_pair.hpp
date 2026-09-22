@@ -30,8 +30,8 @@ void gather_pair_densities( size_t nranges, const pair_point_range* ranges,
   device_queue queue );
 
 /// Weight every pair's derivatives and add them into its two species' potential
-/// channels: the electron's into both of its channels, the quantum particle's
-/// into as many as pair_point_range::particle_channels names
+/// channels: the pair functional reads a species' total density, so its
+/// derivative enters every channel that species is carried in
 void scatter_pair_potential( size_t nranges, const pair_point_range* ranges,
   const double* weights, const double* vrho, double* vrho_pos,
   double* vrho_neg, device_queue queue );

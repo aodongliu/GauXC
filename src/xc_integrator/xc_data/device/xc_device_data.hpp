@@ -72,9 +72,7 @@ struct integrator_term_tracker {
 
 /// One species of a multiparticle call
 struct multiparticle_species {
-  size_t               index                = 0;             ///< the index of the species
   int32_t              nbf                  = 0;             ///< basis functions in its own basis
-  int32_t              nshells              = 0;             ///< shells in its own basis
   bool                 has_intra_functional = false;         ///< it carries an intra functional of its own
   bool                 build_vxc            = false;         ///< the caller asked for its VXC
   bool                 participates         = false;         ///< it takes part in this call: an active intra functional of its own, or a member of an active pair
@@ -103,7 +101,7 @@ struct multiparticle_tracker {
 struct task_work_range {
   size_t  first   = 0; ///< the first task of the run, an index into the batch's tasks
   size_t  count   = 0; ///< tasks in the run; 0 means "to the end of the batch"
-  int32_t nbe_max = 0; ///< the largest nbe among them, printed by the trace
+  int32_t nbe_max = 0; ///< the largest nbe among them, the run's syr2k size class
 };
 
 /// A contiguous stretch of the batch's per-point arrays that one call covers
@@ -123,7 +121,6 @@ struct species_basis_range {
 struct pair_point_range {
   int32_t pair              = 0; ///< index into multiparticle_tracker::pairs
   int32_t npts              = 0; ///< points of the grid task
-  int32_t particle_channels = 1; ///< potential channels the quantum particle's derivative enters: 1 the first, 2 both
   size_t  first             = 0; ///< first point in the batch's pair list
   size_t  electron_offset   = 0; ///< point offset of the electron's species task in the batch arrays
   size_t  particle_offset   = 0; ///< point offset of the particle's species task in the batch arrays
@@ -150,8 +147,6 @@ struct multiparticle_batch {
 struct multiparticle_layout {
   std::vector<XCTask>   species_tasks;      ///< one ordinary task per (grid task, species), in batch order
   std::vector<size_t>   grid_offsets;       ///< per species task: where its grid task starts in the batch's copy of the grid
-  std::vector<size_t>   point_offsets;      ///< per species task: where its own points start in the batch's per-point arrays
-  std::vector<uint32_t> species_indices;    ///< per species task: the species it belongs to
   std::vector<multiparticle_batch> batches; ///< the batches, in order
 };
 

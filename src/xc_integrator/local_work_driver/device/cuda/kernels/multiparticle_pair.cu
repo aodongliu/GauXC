@@ -59,8 +59,7 @@ __global__ void scatter_pair_potential_kernel( size_t nranges,
 
     const double particle_potential = weight * vrho[2*k + 1];
     vrho_pos[particle] += particle_potential;
-    if( vrho_neg and range.particle_channels == 2 )
-      vrho_neg[particle] += particle_potential;
+    if( vrho_neg ) vrho_neg[particle] += particle_potential;
   }
 }
 

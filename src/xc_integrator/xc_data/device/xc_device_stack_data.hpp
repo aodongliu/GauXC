@@ -334,8 +334,6 @@ struct XCDeviceStackData : public XCDeviceData {
     inline void reset() { std::memset(this,0,sizeof(multiparticle_pair_stack)); }
   };
 
-  size_t nspecies_ = 0;   ///< species of the call: one intra energy accumulator each
-
   /// The batch's grid arrays are allocated and packed by the multiparticle
   /// path; the per-task sizing, carving and packing skip them.
   bool shared_grid_ = false;

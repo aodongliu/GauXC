@@ -17,7 +17,6 @@
 #include <gauxc/exceptions.hpp>
 #include <gauxc/basisset_map.hpp>
 
-#include <iostream>
 #include <vector>
 
 namespace GauXC  {
@@ -129,14 +128,15 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     host_task_iterator task_begin, host_task_iterator task_end,
     XCDeviceData& device_data ) {
 
-  const size_t nspecies = densities.size();
-
   auto* lwd = dynamic_cast<LocalDeviceWorkDriver*>(this->local_work_driver_.get());
   if( not lwd )
     GAUXC_GENERIC_EXCEPTION("MultiParticle EXC Gradient requires a device local work driver");
   auto* stack_data = dynamic_cast<XCDeviceStackData*>(&device_data);
   if( not stack_data )
     GAUXC_GENERIC_EXCEPTION("MultiParticle EXC Gradient requires a stack XCDeviceData");
+
+  nvtx_range call_range, phase;
+  call_range.next( "multiparticle exc_grad" );
 
   const auto&   mol     = this->load_balancer_->molecule();
   const auto&   molmeta = this->load_balancer_->molmeta();
@@ -153,6 +153,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     *this->load_balancer_, densities, functional_spec, terms, false );
   const auto& tracker = call.tracker;
 
+  phase.next( "setup: sort tasks" );
   multiparticle_device_detail::sort_tasks_by_cost( task_begin, task_end );
 
   auto& lb_state = this->load_balancer_->state();
@@ -161,6 +162,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   XCWeightAlg& weight_alg = lb_state.weight_alg;
 
   // ---- The union basis, the storage shape and the block-diagonal density
+  phase.next( "setup: union basis" );
   std::vector<species_basis_range> species_basis_ranges;
   BasisSet<double> union_basis = multiparticle_device_detail::build_union_basis(
     tracker, *this->load_balancer_, species_basis_ranges );
@@ -168,16 +170,18 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   const int32_t nshells_union = static_cast<int32_t>( union_basis.nshells() );
 
   auto shape = multiparticle_device_detail::resolve_storage_shape( tracker,
-    densities, call.is_pair_electron );
+    densities );
   shape.terms.exc_grad = true;
   shape.terms.weights  = do_weight_derivatives;
   const bool is_gga      = shape.is_gga();
   const bool two_channel = shape.two_channel();
 
+  phase.next( "setup: union density" );
   std::vector<double> Ps_union, Pz_union;
   multiparticle_device_detail::build_union_density( tracker, densities,
     species_basis_ranges, shape, nbf_union, Ps_union, Pz_union );
 
+  phase.next( "setup: static data" );
   device_data.reset_allocations();
   device_data.allocate_static_data_exc_grad( nbf_union, nshells_union, natoms,
     shape.terms );
@@ -193,109 +197,102 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   BasisSetMap union_basis_map( union_basis, mol );
 
   // ---- The species-task list and its batches
+  phase.next( "setup: species tasks" );
   multiparticle_layout layout;
   device_data.build_species_tasks( shape.terms, tracker, species_basis_ranges,
     union_basis_map, task_begin, task_end, layout );
 
-  size_t nlaunch = 0;   // work-driver entries issued for the last batch
+  phase.end();
 
   for( size_t ibatch = 0; ibatch < layout.batches.size(); ++ibatch ) {
     const auto& batch = layout.batches[ibatch];
+    nvtx_range batch_range, stage;
+    batch_range.next( "batch" );
+    stage.next( "generate buffers" );
     device_data.generate_buffers_multiparticle( shape.terms, union_basis_map,
       layout, ibatch );
-
-    nlaunch = 0;
 
     //-------------- A: density and variables, over the whole list ----------
     // The gradient needs the first basis derivatives; a GGA intra functional
     // additionally needs the basis hessian
+    stage.next( "collocation" );
     if( is_gga ) lwd->eval_collocation_hessian ( &device_data );
     else         lwd->eval_collocation_gradient( &device_data );
-    nlaunch++;
 
     auto do_xmat_vvar = [&]( density_id den_id ) {
+      stage.next( "xmat" );
       lwd->eval_xmat( shape.xmat_fac, &device_data, is_gga, den_id );
-      nlaunch++;
+      stage.next( "vvars" );
       for( const auto& range : batch.task_work_ranges ) {
         if( is_gga ) lwd->eval_vvars_gga( &device_data, den_id, range );
         else         lwd->eval_vvars_lda( &device_data, den_id, range );
-        nlaunch++;
       }
       // The polarized gradient assembly reads both channels' X matrix, which
       // the next eval_xmat would overwrite
-      if( two_channel ) { lwd->save_xmat( &device_data, is_gga, den_id ); nlaunch++; }
+      if( two_channel ) { stage.next( "save xmat" ); lwd->save_xmat( &device_data, is_gga, den_id ); }
     };
     do_xmat_vvar( DEN_S );
     if( two_channel ) do_xmat_vvar( DEN_Z );
 
-    if( is_gga ) {
-      lwd->eval_uvars_gga( &device_data, shape.terms.ks_scheme );
-      nlaunch++;
-    } else if( two_channel ) {
-      lwd->eval_uvars_lda( &device_data, UKS );
-      nlaunch++;
-    }
+    stage.next( "uvars" );
+    if( is_gga )           lwd->eval_uvars_gga( &device_data, shape.terms.ks_scheme );
+    else if( two_channel ) lwd->eval_uvars_lda( &device_data, UKS );
 
     //-------------- B: intra XC, one call per intra species over its points --
     for( size_t p : call.intra_species ) {
       const auto& points = batch.intra_point_ranges[p];
       if( not points.count ) continue;
+      stage.next( "intra functional" );
       if( tracker.species[p].xc_approx == GGA )
         lwd->eval_kern_exc_vxc_gga( *call.intra_functionals[p], &device_data, points );
       else
         lwd->eval_kern_exc_vxc_lda( *call.intra_functionals[p], &device_data, points );
-      nlaunch++;
     }
 
     //-------------- C: the pair stage, over the batch's pairs --------------
     //                 ADDS into vrho, so it must follow B; the pair term
     //                 reaches the gradient through that potential
     if( not batch.pair_point_ranges.empty() ) {
+      stage.next( "pair gather" );
       lwd->gather_pair_densities( &device_data );
+      stage.next( "pair functional" );
       for( size_t functional_group = 0;
            functional_group < batch.pair_functional_ranges.size(); ++functional_group ) {
         const auto& points = batch.pair_functional_ranges[functional_group];
         if( not points.count ) continue;
         lwd->eval_pair_functional( *call.pair_functionals[functional_group],
           &device_data, points );
-        nlaunch++;
       }
+      stage.next( "pair scatter" );
       lwd->scatter_pair_potential( &device_data );
-      nlaunch += 2;
     }
 
     //-------------- D: w_times_f per grid point ----------------------------
     if( do_weight_derivatives ) {
+      stage.next( "w times f" );
       lwd->accumulate_w_times_f( &device_data );
-      nlaunch++;
     }
 
     //-------------- E: one gradient accumulation over the whole list ------
+    stage.next( "gradient accumulation" );
     if( is_gga )
       lwd->inc_exc_grad_gga( &device_data, shape.terms.ks_scheme,
         do_weight_derivatives );
     else
       lwd->inc_exc_grad_lda( &device_data, shape.terms.ks_scheme,
         do_weight_derivatives );
-    nlaunch++;
 
     //-------------- F: weight derivatives over the batch's grid -----------
     if( do_weight_derivatives ) {
+      stage.next( "weight derivatives" );
       lwd->eval_weight_1st_deriv_contracted( &device_data, weight_alg,
         stack_data->w_times_f_device_, stack_data->grid_npts_ );
-      nlaunch++;
     }
   }
 
+  phase.next( "copy back" );
   auto rt = detail::as_device_runtime(this->load_balancer_->runtime());
   rt.device_backend()->master_queue_synchronize();
-
-  if( multiparticle_device_detail::trace_enabled() )
-    std::cout << "[GAUXC MULTIPARTICLE GRAD] nspecies=" << nspecies
-              << " nbf_union=" << nbf_union
-              << " nspecies_tasks=" << layout.species_tasks.size()
-              << " nbatches=" << layout.batches.size()
-              << " work_driver_entries_per_batch=" << nlaunch << std::endl;
 
   this->timer_.time_op("XCIntegrator.DeviceToHostCopy_EXC_GRAD",[&](){
     value_type N_EL_total = 0.0;

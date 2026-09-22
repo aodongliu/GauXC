@@ -13,14 +13,12 @@
 #include "incore_replicated_xc_device_integrator.hpp"
 #include "device/local_device_work_driver.hpp"
 #include "device/xc_device_aos_data.hpp"
+#include "nvtx_range.hpp"
 #include <gauxc/exceptions.hpp>
 #include <gauxc/util/unused.hpp>
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
-#include <iostream>
-#include <string>
 #include <vector>
 
 namespace GauXC  {
@@ -45,7 +43,6 @@ struct multiparticle_call {
   std::vector<const functional_type*> intra_functionals; ///< per species: its intra functional, null without one
   std::vector<const functional_type*> pair_functionals;  ///< the call's distinct pair functionals, indexed by multiparticle_pair::functional_group
   std::vector<size_t>                 intra_species;     ///< the species carrying an intra functional, in species order
-  std::vector<char>                   is_pair_electron;  ///< per species: it is the electron of an active pair
 };
 
 /// Resolve one call: a species participates through an active intra functional
@@ -74,14 +71,11 @@ inline multiparticle_call resolve_multiparticle_call( const LoadBalancer& load_b
   tracker.pairs.resize( npairs );
   tracker.do_vxc = vxc_is_output ? not terms.vxc_targets.empty() : true;
   call.intra_functionals.assign( nspecies, nullptr );
-  call.is_pair_electron.assign( nspecies, 0 );
 
   for( size_t p = 0; p < nspecies; ++p ) {
     const auto& basis   = load_balancer.basis(p);
     auto&       species = tracker.species[p];
-    species.index     = p;
     species.nbf       = static_cast<int32_t>( basis.nbf() );
-    species.nshells   = static_cast<int32_t>( basis.nshells() );
     species.ks_scheme = densities[p].Pz ? UKS : RKS;
     species.xc_approx = LDA;
     species.build_vxc = build_vxc[p];
@@ -123,7 +117,6 @@ inline multiparticle_call resolve_multiparticle_call( const LoadBalancer& load_b
     if( pair.active ) {
       tracker.species[pair.electron].participates = true;
       tracker.species[pair.particle].participates = true;
-      call.is_pair_electron[pair.electron] = 1;
 
       const auto* functional = pair_functional.functionals.front().get();
       auto entry = std::find( call.pair_functionals.begin(),
@@ -137,15 +130,12 @@ inline multiparticle_call resolve_multiparticle_call( const LoadBalancer& load_b
   return call;
 }
 
-/// Whether a quantum particle's density can be carried in one channel exactly:
-/// high spin (Ps == Pz bitwise), LD == nbf, no intra functional of its own, and
-/// not the electron of an active pair (the pair potential reaches both of the
-/// electron's spin channels)
+/// Whether a species' density can be carried in one channel exactly: high spin
+/// (Ps == Pz bitwise), LD == nbf, and no intra functional of its own
 inline bool carried_in_one_channel( const double* Ps, int64_t ldps,
                                     const double* Pz, int64_t ldpz,
-                                    bool has_intra_functional, bool is_pair_electron,
-                                    int64_t nbf ) {
-  if( not Pz or has_intra_functional or is_pair_electron ) return false;
+                                    bool has_intra_functional, int64_t nbf ) {
+  if( not Pz or has_intra_functional ) return false;
   if( ldps != nbf or ldpz != nbf ) return false;
   return std::memcmp( Ps, Pz, size_t(nbf) * size_t(nbf) * sizeof(double) ) == 0;
 }
@@ -153,9 +143,9 @@ inline bool carried_in_one_channel( const double* Ps, int64_t ldps,
 /// The one storage shape the whole species-task list is carried in
 struct storage_shape {
   integrator_term_tracker terms;           ///< ks_scheme (RKS: one channel, UKS: two) and xc_approx of the shape
-  std::vector<char>       one_channel;     ///< per species: its density is carried in one channel
   bool                    scalar   = true; ///< one channel serves every species
   double                  xmat_fac = 2.0;  ///< the X matrix's spin factor: 2 for one channel, 1 for two
+  std::vector<bool>       one_channel;     ///< per species: its density is carried in one channel exactly (Ps=Pz, avoid duplicate computation)
   inline bool two_channel() const { return not scalar; }
   inline bool is_gga() const { return terms.xc_approx == GGA; }
 };
@@ -165,18 +155,18 @@ struct storage_shape {
 /// any intra functional is GGA
 template <typename DensityList>
 inline storage_shape resolve_storage_shape( const multiparticle_tracker& tracker,
-  const DensityList& densities, const std::vector<char>& is_pair_electron ) {
+  const DensityList& densities ) {
 
   const size_t nspecies = tracker.nspecies();
   storage_shape shape;
-  shape.one_channel.assign( nspecies, 0 );
+  shape.one_channel.assign( nspecies, false );
 
   for( size_t p = 0; p < nspecies; ++p ) {
     const auto& species = tracker.species[p];
     if( not species.participates or not densities[p].Pz ) continue;
-    shape.one_channel[p] = carried_in_one_channel( densities[p].Ps, densities[p].ldps,
-      densities[p].Pz, densities[p].ldpz, species.has_intra_functional,
-      is_pair_electron[p] != 0, static_cast<int64_t>(species.nbf) );
+    shape.one_channel[p] = carried_in_one_channel( densities[p].Ps,
+      densities[p].ldps, densities[p].Pz, densities[p].ldpz,
+      species.has_intra_functional, static_cast<int64_t>(species.nbf) );
     if( not shape.one_channel[p] ) shape.scalar = false;
   }
 
@@ -250,15 +240,6 @@ inline void sort_tasks_by_cost( std::vector<XCTask>::iterator task_begin,
     []( const XCTask& a, const XCTask& b ) {
       return a.cost_exc_vxc(0) > b.cost_exc_vxc(0);
     });
-}
-
-/// GAUXC_MULTIPARTICLE_TRACE=1: print the shape of the species-task list, per call
-inline bool trace_enabled() {
-  static const bool enabled = [](){
-    const char* v = std::getenv("GAUXC_MULTIPARTICLE_TRACE");
-    return v and std::string(v) != "0";
-  }();
-  return enabled;
 }
 
 } // namespace multiparticle_device_detail
@@ -402,6 +383,9 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   if( not lwd )
     GAUXC_GENERIC_EXCEPTION("MultiParticle EXC/VXC requires a device local work driver");
 
+  nvtx_range call_range, phase;
+  call_range.next( "multiparticle exc_vxc" );
+
   // ---- The species and the pairs of this call, resolved once
   auto call = multiparticle_device_detail::resolve_multiparticle_call(
     *this->load_balancer_, densities, functional_spec, terms, true );
@@ -410,6 +394,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   for( size_t p = 0; p < nspecies; ++p ) intra_exc[p] = 0.0;
   for( size_t i = 0; i < npairs; ++i )   inter_pair_exc[i] = 0.0;
 
+  phase.next( "setup: sort tasks" );
   multiparticle_device_detail::sort_tasks_by_cost( task_begin, task_end );
 
   auto& lb_state = this->load_balancer_->state();
@@ -427,6 +412,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   }
 
   // ---- The union basis, the storage shape and the block-diagonal density
+  phase.next( "setup: union basis" );
   std::vector<species_basis_range> species_basis_ranges;
   BasisSet<double> union_basis = multiparticle_device_detail::build_union_basis(
     tracker, *this->load_balancer_, species_basis_ranges );
@@ -435,15 +421,17 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   const size_t  nbf_union_squared = size_t(nbf_union) * size_t(nbf_union);
 
   auto shape = multiparticle_device_detail::resolve_storage_shape( tracker,
-    densities, call.is_pair_electron );
+    densities );
   shape.terms.exc_vxc = true;
   const bool is_gga      = shape.is_gga();
   const bool two_channel = shape.two_channel();
 
+  phase.next( "setup: union density" );
   std::vector<double> Ps_union, Pz_union;
   multiparticle_device_detail::build_union_density( tracker, densities,
     species_basis_ranges, shape, nbf_union, Ps_union, Pz_union );
 
+  phase.next( "setup: static data" );
   device_data.reset_allocations();
   device_data.allocate_static_data_exc_vxc( nbf_union, nshells_union, shape.terms,
     tracker.do_vxc );
@@ -456,112 +444,97 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   BasisSetMap union_basis_map( union_basis, this->load_balancer_->molecule() );
 
   // ---- The species-task list and its batches
+  phase.next( "setup: species tasks" );
   multiparticle_layout layout;
   device_data.build_species_tasks( shape.terms, tracker, species_basis_ranges,
     union_basis_map, task_begin, task_end, layout );
 
-  // The trace: the shape of the list, per batch
-  if( multiparticle_device_detail::trace_enabled() )
-  for( const auto& batch : layout.batches ) {
-    size_t npts_pair = 0;
-    for( const auto& range : batch.pair_point_ranges ) npts_pair += size_t( range.npts );
-    std::cout << "[GAUXC MULTIPARTICLE] batch species_tasks="
-              << (batch.last_task - batch.first_task)
-              << " npts_grid=" << batch.npts_grid
-              << " npts_total=" << batch.npts_total
-              << " npts_pair=" << npts_pair
-              << " pair_ranges=" << batch.pair_point_ranges.size()
-              << " work_ranges=" << batch.task_work_ranges.size();
-    for( const auto& range : batch.task_work_ranges )
-      std::cout << " [" << range.count << "@nbe<=" << range.nbe_max << "]";
-    std::cout << std::endl;
-  }
-
-  size_t nlaunch = 0;   // work-driver entries issued for the last batch
+  phase.end();
 
   for( size_t ibatch = 0; ibatch < layout.batches.size(); ++ibatch ) {
     const auto& batch = layout.batches[ibatch];
+    nvtx_range batch_range, stage;
+    batch_range.next( "batch" );
+    stage.next( "generate buffers" );
     device_data.generate_buffers_multiparticle( shape.terms, union_basis_map,
       layout, ibatch );
 
-    nlaunch = 0;
-
     //-------------- A: density and variables, over the whole list ----------
+    stage.next( "collocation" );
     if( is_gga ) lwd->eval_collocation_gradient( &device_data );
     else         lwd->eval_collocation( &device_data );
-    nlaunch++;
 
     // The V variables and the Z matrix launch once per work range; the X
     // matrix and the VXC accumulation once per batch
     auto do_xmat_vvar = [&]( density_id den_id ) {
+      stage.next( "xmat" );
       lwd->eval_xmat( shape.xmat_fac, &device_data, false, den_id );
-      nlaunch++;
+      stage.next( "vvars" );
       for( const auto& range : batch.task_work_ranges ) {
         if( is_gga ) lwd->eval_vvars_gga( &device_data, den_id, range );
         else         lwd->eval_vvars_lda( &device_data, den_id, range );
-        nlaunch++;
       }
     };
     do_xmat_vvar( DEN_S );
     if( two_channel ) do_xmat_vvar( DEN_Z );
 
     // U variables: (rho_s, rho_z) -> (rho_alpha, rho_beta) and gamma; a no-op for scalar LDA
-    if( is_gga ) {
-      lwd->eval_uvars_gga( &device_data, shape.terms.ks_scheme );
-      nlaunch++;
-    } else if( two_channel ) {
-      lwd->eval_uvars_lda( &device_data, UKS );
-      nlaunch++;
-    }
+    stage.next( "uvars" );
+    if( is_gga )           lwd->eval_uvars_gga( &device_data, shape.terms.ks_scheme );
+    else if( two_channel ) lwd->eval_uvars_lda( &device_data, UKS );
 
     //-------------- B: intra XC, one call per intra species over its points --
     for( size_t p : call.intra_species ) {
       const auto& points = batch.intra_point_ranges[p];
       if( not points.count ) continue;
+      stage.next( "intra functional" );
       // The kernel follows the species' functional, not the storage shape
       if( tracker.species[p].xc_approx == GGA )
         lwd->eval_kern_exc_vxc_gga( *call.intra_functionals[p], &device_data, points );
       else
         lwd->eval_kern_exc_vxc_lda( *call.intra_functionals[p], &device_data, points );
+      stage.next( "intra energy" );
       lwd->inc_exc( &device_data, points, device_data.intra_exc_device_data(p) );
       lwd->inc_nel( &device_data, points );
-      nlaunch += 3;
     }
 
     //-------------- C: the pair stage, over the batch's pairs --------------
     //                 ADDS into vrho, so it must follow B. One evaluation per
     //                 distinct pair functional, however many pairs share it.
     if( not batch.pair_point_ranges.empty() ) {
+      stage.next( "pair gather" );
       lwd->gather_pair_densities( &device_data );
+      stage.next( "pair functional" );
       for( size_t functional_group = 0;
            functional_group < batch.pair_functional_ranges.size(); ++functional_group ) {
         const auto& points = batch.pair_functional_ranges[functional_group];
         if( not points.count ) continue;
         lwd->eval_pair_functional( *call.pair_functionals[functional_group], &device_data, points );
-        nlaunch++;
       }
+      stage.next( "pair scatter" );
       lwd->scatter_pair_potential( &device_data );
+      stage.next( "pair energy" );
       lwd->sum_pair_energy( &device_data );
-      nlaunch += 3;
     }
 
     //-------------- D: Z matrix and VXC over the whole list ---------------
     if( tracker.do_vxc ) {
       auto do_zmat_vxc = [&]( density_id den_id ) {
         const auto scheme = shape.terms.ks_scheme;
+        stage.next( "zmat" );
         for( const auto& range : batch.task_work_ranges ) {
           if( is_gga ) lwd->eval_zmat_gga_vxc( &device_data, scheme, den_id, range );
           else         lwd->eval_zmat_lda_vxc( &device_data, scheme, den_id, range );
-          nlaunch++;
         }
+        stage.next( "vxc syr2k" );
         lwd->inc_vxc( &device_data, den_id, false );
-        nlaunch++;
       };
       do_zmat_vxc( DEN_S );
       if( two_channel ) do_zmat_vxc( DEN_Z );
     }
   }
 
+  phase.next( "copy back" );
   if( tracker.do_vxc ) {
     lwd->symmetrize_vxc( &device_data, DEN_S );
     if( two_channel ) lwd->symmetrize_vxc( &device_data, DEN_Z );
@@ -569,13 +542,6 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
 
   auto rt = detail::as_device_runtime(this->load_balancer_->runtime());
   rt.device_backend()->master_queue_synchronize();
-
-  if( multiparticle_device_detail::trace_enabled() )
-    std::cout << "[GAUXC MULTIPARTICLE] nspecies=" << nspecies
-              << " nbf_union=" << nbf_union
-              << " nspecies_tasks=" << layout.species_tasks.size()
-              << " nbatches=" << layout.batches.size()
-              << " work_driver_entries_per_batch=" << nlaunch << std::endl;
 
   double EXC_unused = 0.0, N_EL_total = 0.0;
   std::vector<double> VXCs_union, VXCz_union;
@@ -594,24 +560,30 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
     device_data.retrieve_pair_exc( inter_pair_exc, npairs );
   });
 
-  // Cut the union VXC into per-species blocks; a particle carried in one
-  // channel returns half of its one accumulator in each channel
+  // Cut the union VXC into per-species blocks. A one-channel species returns
+  // the same matrix in both channels, half its one accumulator
   if( tracker.do_vxc )
   for( size_t p = 0; p < nspecies; ++p ) {
     const auto& species = tracker.species[p];
     if( not species.participates or not species.build_vxc ) continue;
     const size_t nbf    = static_cast<size_t>( species.nbf );
     const size_t offset = static_cast<size_t>( species_basis_ranges[p].basis_function_offset );
-    const double scale  = ( shape.scalar and shape.one_channel[p] ) ? 0.5 : 1.0;
+    if( shape.one_channel[p] ) {
+      for( size_t j = 0; j < nbf; ++j )
+        for( size_t i = 0; i < nbf; ++i ) {
+          const double v = 0.5 * VXCs_union[ (offset+j)*nbf_union + (offset+i) ];
+          vxc[p].VXCs[ j*nbf + i ] = v;
+          vxc[p].VXCz[ j*nbf + i ] = v;
+        }
+      continue;
+    }
     for( size_t j = 0; j < nbf; ++j )
       for( size_t i = 0; i < nbf; ++i )
-        vxc[p].VXCs[ j*nbf + i ] = scale * VXCs_union[ (offset+j)*nbf_union + (offset+i) ];
+        vxc[p].VXCs[ j*nbf + i ] = VXCs_union[ (offset+j)*nbf_union + (offset+i) ];
     if( not densities[p].Pz ) continue;
     for( size_t j = 0; j < nbf; ++j )
       for( size_t i = 0; i < nbf; ++i )
-        vxc[p].VXCz[ j*nbf + i ] = shape.one_channel[p]
-          ? vxc[p].VXCs[ j*nbf + i ]
-          : VXCz_union[ (offset+j)*nbf_union + (offset+i) ];
+        vxc[p].VXCz[ j*nbf + i ] = VXCz_union[ (offset+j)*nbf_union + (offset+i) ];
   }
 
 }

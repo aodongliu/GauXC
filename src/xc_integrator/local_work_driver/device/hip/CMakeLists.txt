@@ -26,6 +26,7 @@ target_sources(gauxc PRIVATE
   kernels/zmat_vxc.hip
   kernels/hip_inc_potential.hip
   kernels/symmetrize_mat.hip
+  kernels/multiparticle_pair.hip
 
 )
 

@@ -75,7 +75,11 @@ struct AoSScheme1Base : public detail::LocalDeviceWorkDriverPIMPL {
 
   void save_xmat( XCDeviceData*, bool do_grad, density_id den ) override final;
 
+#ifdef GAUXC_HAS_CUDA
   bool supports_multiparticle() const override { return true; }
+#else
+  bool supports_multiparticle() const override { return false; }
+#endif
   void gather_pair_densities( XCDeviceData* ) override final;
   void eval_pair_functional( const functional_type&, XCDeviceData*,
     point_work_range ) override final;

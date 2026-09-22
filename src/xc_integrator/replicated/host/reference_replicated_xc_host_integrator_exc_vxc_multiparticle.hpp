@@ -16,6 +16,7 @@
 #include "host/local_host_work_driver.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 namespace GauXC::detail {
 
@@ -149,6 +150,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
   // Derive per-particle bases, spin, GGA needs, and zero the integrands.
   std::vector<int64_t> nbf(np);
   std::vector<bool> has_z(np, false);
+  std::vector<bool> one_channel(np, false);
   std::vector<bool> need_grad(np, false);
   std::vector<bool> participates(np, false);
 
@@ -169,11 +171,27 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
         need_grad[p] = true;
     }
 
+    // A high-spin species with no intra functional of its own is carried in one channel (Ps=Pz, avoid duplicate computation)
+    const bool has_intra = active_intra[p] and funcs and not funcs->empty();
+    one_channel[p] = has_z[p] and not has_intra and
+      den.ldps == nbf[p] and den.ldpz == nbf[p] and
+      std::memcmp( den.Ps, den.Pz, size_t(nbf[p]) * size_t(nbf[p]) * sizeof(value_type) ) == 0;
+
     if( build_vxc[p] )
       std::fill(vxc[p].VXCs, vxc[p].VXCs + nbf[p] * vxc[p].ldvxcs, 0.0);
     if( build_vxc[p] and has_z[p] )
       std::fill(vxc[p].VXCz, vxc[p].VXCz + nbf[p] * vxc[p].ldvxcz, 0.0);
     intra_exc[p] = 0.0;
+  }
+
+  // The RKS density of a one-channel species: half its total density
+  std::vector<std::vector<value_type>> half_density(np);
+  for( size_t p = 0; p < np; ++p ) {
+    if( not one_channel[p] ) continue;
+    const size_t nbf_squared = size_t(nbf[p]) * size_t(nbf[p]);
+    half_density[p].resize( nbf_squared );
+    for( size_t k = 0; k < nbf_squared; ++k )
+      half_density[p][k] = 0.5 * densities[p].Ps[k];
   }
 
   for( size_t i = 0; i < ninter; ++i ) {
@@ -257,7 +275,7 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     //----------------------Start Per-Particle Density Evaluation------------------------
     for( size_t p = 0; p < np; ++p ) {
       auto& s = scratch[p];
-      s.is_uks = has_z[p];
+      s.is_uks = has_z[p] and not one_channel[p];
       s.gga = need_grad[p];
       s.active = false;
       s.nbe = 0;
@@ -332,9 +350,11 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
           s.shell_list, basis_eval );
 
       // Evaluate X matrix (fac * P * B) -> store in Z
+      // A one-channel species uses the half density Ps/2
       const auto xmat_fac = s.is_uks ? 1.0 : 2.0;
+      const auto* Ps = one_channel[p] ? half_density[p].data() : densities[p].Ps;
       lwd->eval_xmat( npts, nbf[p], s.nbe, s.submat_map, xmat_fac,
-        densities[p].Ps, densities[p].ldps, basis_eval, s.nbe, zmat, s.nbe,
+        Ps, densities[p].ldps, basis_eval, s.nbe, zmat, s.nbe,
         s.nbe_scr.data() );
 
       if( s.is_uks )
@@ -462,7 +482,8 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
 
           if( build_vxc[pair.particle] ) {
             if( sp.is_uks ) {
-              sp.vrho[2*i] += vrho_pair[2*i+1];
+              sp.vrho[2*i]   += vrho_pair[2*i+1];
+              sp.vrho[2*i+1] += vrho_pair[2*i+1];
             } else {
               sp.vrho[i] += vrho_pair[2*i+1];
             }
@@ -573,6 +594,18 @@ void ReferenceReplicatedXCHostIntegrator<ValueType>::
     for( int32_t j = 0; j < nbf[p]; ++j )
     for( int32_t i = j+1; i < nbf[p]; ++i )
       vxc[p].VXCs[j + i*vxc[p].ldvxcs] = vxc[p].VXCs[i + j*vxc[p].ldvxcs];
+
+    // A one-channel species returns the same matrix in both channels, half its
+    // one accumulator
+    if( one_channel[p] ) {
+      for( int32_t j = 0; j < nbf[p]; ++j )
+      for( int32_t i = 0; i < nbf[p]; ++i ) {
+        const auto v = 0.5 * vxc[p].VXCs[i + j*vxc[p].ldvxcs];
+        vxc[p].VXCs[i + j*vxc[p].ldvxcs] = v;
+        vxc[p].VXCz[i + j*vxc[p].ldvxcz] = v;
+      }
+      continue;
+    }
 
     if( has_z[p] ) {
       for( int32_t j = 0; j < nbf[p]; ++j )

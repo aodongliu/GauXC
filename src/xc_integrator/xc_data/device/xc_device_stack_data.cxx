@@ -1346,7 +1346,7 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
   if( species_basis_ranges.size() != nspecies )
     GAUXC_GENERIC_EXCEPTION("MultiParticle: one basis range per species is required");
 
-  // For different sizes of syr2k dispatch. See Step 4
+  // A species-task list is live: the per-task packing follows the batch's grid
   multiparticle_active_ = true;
 
   // A quantum particle belongs to at most one active pair
@@ -1362,8 +1362,6 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
 
   layout.species_tasks.clear();
   layout.grid_offsets.clear();
-  layout.point_offsets.clear();
-  layout.species_indices.clear();
   layout.batches.clear();
 
   // Form an order for species that participates 
@@ -1481,8 +1479,6 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
   //         (for contiguous memory access during functional evaluation and VXC syr2k launch grid)
   layout.species_tasks.reserve( species_tasks.size() );
   layout.grid_offsets.reserve( species_tasks.size() );
-  layout.point_offsets.reserve( species_tasks.size() );
-  layout.species_indices.reserve( species_tasks.size() );
 
   //  TINY    syr2k_tiny
   //  SMALL   cutlass_syr2k_32x32 (threadblock 32x32x16)
@@ -1531,8 +1527,6 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
           nbe_max = std::max( nbe_max, nbe );
           task_point_offset[task] = npts;
           layout.grid_offsets.push_back( grid_task_point_offset[igrid_in_batch] );
-          layout.point_offsets.push_back( npts );
-          layout.species_indices.push_back( static_cast<uint32_t>(species_index) );
           npts += size_t( species_tasks[task].npts );
           layout.species_tasks.push_back( std::move(species_tasks[task]) );
         }
@@ -1585,9 +1579,6 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
         pair_point_range range;
         range.pair              = static_cast<int32_t>( ipair );
         range.npts              = static_cast<int32_t>( (batch.grid_task_begin + igrid_in_batch)->points.size() );
-        // The quantum particle's derivative reaches its second channel only
-        // when that channel carries the same density
-        range.particle_channels = tracker.species[pair.particle].ks_scheme == RKS ? 2 : 1;
         range.first             = npts_pair;
         range.electron_offset   = task_point_offset[electron_task];
         range.particle_offset   = task_point_offset[particle_task];
@@ -1745,7 +1736,6 @@ void XCDeviceStackData::allocate_static_data_multiparticle( size_t nspecies,
 
   if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
 
-  nspecies_ = nspecies;
   buffer_adaptor mem( dynmem_ptr, dynmem_sz );
   multiparticle_static.intra_exc_device = mem.aligned_alloc<double>( nspecies, csl );
   if( npairs )

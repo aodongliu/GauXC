@@ -13,3 +13,6 @@ build/
 build*/
 _build/
 cmake-build-*/
+
+# Written by tests/moltypes_test.cxx
+tests/ref_data/test_mol_c.hdf5

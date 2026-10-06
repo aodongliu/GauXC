@@ -337,24 +337,14 @@ struct XCDeviceStackData : public XCDeviceData {
     inline void reset() { std::memset(this,0,sizeof(multiparticle_pair_stack)); }
   };
 
-  /// The batch's grid arrays are allocated and packed by the multiparticle
-  /// path; the per-task sizing, carving and packing skip them.
-  bool shared_grid_ = false;
-
   /// Per species task of the live batch, where its grid task starts in the
   /// batch's one copy of the grid. Empty outside the multiparticle path.
   std::vector<size_t> task_grid_offset_;
   size_t grid_npts_ = 0;        ///< points in the batch's copy of the grid
   size_t ntasks_intra_ = 0;     ///< number of leading species tasks that have an intra functional
 
-  /// The live batch's work ranges; empty outside the multiparticle path
-  std::vector<task_work_range> task_work_ranges_;
-
   size_t* task_grid_offset_device_ = nullptr; ///< grid offset of each species task in the batch
   double* w_times_f_device_        = nullptr; ///< weight * XC energy density per grid point
-
-  /// A species-task list is live.
-  bool multiparticle_active_ = false;
 
   multiparticle_static_data multiparticle_static;
   multiparticle_pair_stack  pair_stack;

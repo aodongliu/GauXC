@@ -65,10 +65,8 @@ void XCDeviceStackData::reset_allocations() {
   grid_npts_ = 0;
   ntasks_intra_ = 0;
   task_grid_offset_.clear();
-  task_work_ranges_.clear();
   task_grid_offset_device_ = nullptr;
   w_times_f_device_        = nullptr;
-  multiparticle_active_ = false;
   multiparticle_static.reset();
   pair_stack.reset();
   dynmem_ptr = device_ptr;
@@ -778,12 +776,6 @@ size_t XCDeviceStackData::get_mem_req(
 
   required_term_storage reqt(terms);
 
-  // The multiparticle batch's grid is allocated and packed once by the caller
-  if( shared_grid_ ) {
-    reqt.grid_points  = false;
-    reqt.grid_weights = false;
-  }
-
   size_t mem_req = 
     // Grid
     reqt.grid_points_size (npts)  * sizeof(double) + 
@@ -858,12 +850,6 @@ XCDeviceStackData::device_buffer_t XCDeviceStackData::allocate_dynamic_stack(
 
 
   required_term_storage reqt(terms);
-
-  // The multiparticle batch's grid is allocated by the caller, once.
-  if( shared_grid_ ) {
-    reqt.grid_points  = false;
-    reqt.grid_weights = false;
-  }
 
   const size_t msz = total_npts_task_batch;
   const size_t aln = 256;
@@ -1220,7 +1206,7 @@ void XCDeviceStackData::pack_and_send( integrator_term_tracker terms,
   if( not device_backend_ ) GAUXC_GENERIC_EXCEPTION("Invalid Device Backend");
 
   // The multiparticle batch's grid is packed by the caller, once
-  if( shared_grid_ ) {
+  if( terms.shared_grid ) {
     device_backend_->master_queue_synchronize();
     return;
   }
@@ -1349,9 +1335,6 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
   if( species_basis_ranges.size() != nspecies )
     GAUXC_GENERIC_EXCEPTION("MultiParticle: one basis range per species is required");
 
-  // A species-task list is live: the per-task packing follows the batch's grid
-  multiparticle_active_ = true;
-
   // A quantum particle belongs to at most one active pair
   {
     std::vector<char> in_active_pair( nspecies, 0 );
@@ -1421,14 +1404,12 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
 
   // ---- 2. Device memory of one species task, its grid excluded: the batch
   //         holds one copy of the grid per grid task, counted in step 3
-  const bool shared_grid_on_entry = shared_grid_;
-  shared_grid_ = true;
+  terms.shared_grid = true;
   std::vector<size_t> task_bytes( species_tasks.size() );
   for( size_t task = 0; task < species_tasks.size(); ++task )
     task_bytes[task] = get_mem_req( terms, species_tasks[task] )
       + sizeof(double) * size_t( species_tasks[task].npts )   // its weights
       + ( terms.exc_grad ? sizeof(size_t) : 0 );               // its grid offset
-  shared_grid_ = shared_grid_on_entry;
 
   // ---- 3. Greedy batch partition over whole grid tasks, as generate_buffers
   //         partitions over tasks
@@ -1625,7 +1606,6 @@ void XCDeviceStackData::generate_buffers_multiparticle(
   ntasks_intra_ = batch.ntasks_intra;
   task_grid_offset_.assign( layout.grid_offsets.begin() + batch.first_task,
                                layout.grid_offsets.begin() + batch.last_task );
-  task_work_ranges_ = batch.task_work_ranges;
 
   // ---- 1. The batch's single copy of the grid, ahead of everything else
   buffer_adaptor mem( dynmem_ptr, dynmem_sz );
@@ -1638,8 +1618,7 @@ void XCDeviceStackData::generate_buffers_multiparticle(
 
   // ---- 2. Everything else is sized by the species-task list, through the
   //         per-task allocator with the grid excluded
-  const bool shared_grid_on_entry = shared_grid_;
-  shared_grid_ = true;
+  terms.shared_grid = true;
   auto buf = allocate_dynamic_stack( terms, batch_tasks_begin, batch_tasks_end,
     device_buffer_t{ mem.stack(), mem.nleft() } );
 
@@ -1733,7 +1712,6 @@ void XCDeviceStackData::generate_buffers_multiparticle(
   }
 
   pack_and_send( terms, batch_tasks_begin, batch_tasks_end, basis_map );
-  shared_grid_ = shared_grid_on_entry;
 }
 
 

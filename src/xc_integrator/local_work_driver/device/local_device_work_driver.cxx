@@ -144,7 +144,13 @@ void LocalDeviceWorkDriver::inc_exc( XCDeviceData* data, point_work_range range,
 }
 
 FWD_TO_PIMPL_RANGE(inc_nel)                   // Increment N_EL over a point work range
-FWD_TO_PIMPL_DEN_ID_BOOL(inc_vxc)            // Increment VXC_I by Z
+
+void LocalDeviceWorkDriver::inc_vxc( XCDeviceData* data, density_id den,
+  bool do_m, const std::vector<task_work_range>& work_ranges ) {
+  throw_if_invalid_pimpl(pimpl_);
+  pimpl_->inc_vxc(data, den, do_m, work_ranges);
+}
+
 FWD_TO_PIMPL_DEN_ID_BOOL(inc_fxc)            // Increment FXC_I by Z
 
 FWD_TO_PIMPL(inc_exx_k)     

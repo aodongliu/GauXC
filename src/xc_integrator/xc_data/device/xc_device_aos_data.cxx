@@ -691,7 +691,7 @@ void XCDeviceAoSData::pack_and_send(
 
       // Grid points and weights; a multiparticle batch packs the grid once and
       // every species task slices it, so the per-task walk is skipped
-      if( grid_npts_ ) {
+      if( terms.shared_grid ) {
         const size_t grid_offset = task_grid_offset_.at(itask);
         task.points_x = base_stack.points_x_device + grid_offset;
         task.points_y = base_stack.points_y_device + grid_offset;

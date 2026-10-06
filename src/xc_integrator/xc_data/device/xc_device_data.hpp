@@ -16,7 +16,6 @@
 #include <gauxc/basisset_map.hpp>
 #include <gauxc/shell_pair.hpp>
 #include <gauxc/molmeta.hpp>
-#include <gauxc/exceptions.hpp>
 //#include <gauxc/reduction_driver.hpp>
 #include <any>
 #include <cstring>
@@ -55,6 +54,7 @@ struct integrator_term_tracker {
   bool exx                       = false;
   bool exx_ek_screening          = false;
   bool fxc_contraction           = false;
+  bool shared_grid               = false; ///< the tasks slice one grid that the caller packs
   integrator_xc_approx xc_approx = _UNDEF_APPROX;
   integrator_ks_scheme ks_scheme = _UNDEF_SCHEME;
   inline void reset() {
@@ -603,6 +603,7 @@ struct required_term_storage {
     // Everything under the sun needs the grid
     grid_points  = true;
     grid_weights = true;
+    if( tracker.shared_grid ) grid_points = grid_weights = false;
 
     if(tracker.weights) {
       grid_to_center_dist_scr     = true;
@@ -878,36 +879,24 @@ struct XCDeviceData {
   virtual void build_species_tasks( integrator_term_tracker,
     const multiparticle_tracker&, const std::vector<species_basis_range>&,
     const BasisSetMap&, host_task_iterator, host_task_iterator,
-    multiparticle_layout& ) {
-    GAUXC_GENERIC_EXCEPTION("MultiParticle species task list NYI for this XCDeviceData");
-  }
+    multiparticle_layout& ) = 0;
 
   /// Allocate and pack one batch of the species-task list
   virtual void generate_buffers_multiparticle( integrator_term_tracker,
-    const BasisSetMap&, multiparticle_layout&, size_t ) {
-    GAUXC_GENERIC_EXCEPTION("MultiParticle buffers NYI for this XCDeviceData");
-  }
+    const BasisSetMap&, multiparticle_layout&, size_t ) = 0;
 
   /// Carve and zero one intra XC energy accumulator per species and one pair
   /// energy accumulator per pair
-  virtual void allocate_static_data_multiparticle( size_t, size_t ) {
-    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
-  }
+  virtual void allocate_static_data_multiparticle( size_t, size_t ) = 0;
 
   /// Copy the per-species intra XC energies back to the host
-  virtual void retrieve_intra_exc( double*, size_t ) {
-    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
-  }
+  virtual void retrieve_intra_exc( double*, size_t ) = 0;
 
   /// Copy the per-pair energies back to the host
-  virtual void retrieve_pair_exc( double*, size_t ) {
-    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
-  }
+  virtual void retrieve_pair_exc( double*, size_t ) = 0;
 
   /// The intra XC energy accumulator of one species, on the device
-  virtual double* intra_exc_device_data( size_t ) {
-    GAUXC_GENERIC_EXCEPTION("MultiParticle energy accumulators NYI for this XCDeviceData");
-  }
+  virtual double* intra_exc_device_data( size_t ) = 0;
 
 };
 

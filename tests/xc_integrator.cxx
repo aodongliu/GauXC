@@ -944,4 +944,84 @@ TEST_CASE( "NEO XC Integrator", "[xc-integrator-neo]" ) {
     }
   }
 #endif
+
+#if defined(GAUXC_HAS_HOST) and defined(GAUXC_HAS_DEVICE)
+  // A proton with Ps != Pz is carried in two channels, so the RKS electron's
+  // unpolarized functional runs on the two-channel shape: host against device
+  SECTION( "two-channel protons next to an RKS electron" ) {
+
+    using matrix_type = Eigen::MatrixXd;
+    auto rt = DeviceRuntimeEnvironment(GAUXC_MPI_CODE(MPI_COMM_WORLD,) 0.9);
+
+    auto host_vs_device = [&]( std::string reference_file, functional_type& func,
+      functional_type& epc_func ) {
+      auto ref = read_neo_reference( reference_file );
+      REQUIRE( not ref.uks );
+      for( size_t i = 0; i < ref.nprot(); ++i ) {
+        REQUIRE( ref.prot_uks[i] );
+        ref.prot_Pz[i] *= 0.999;
+      }
+      auto densities = ref.densities();
+
+      auto mg = MolGridFactory::create_default_molgrid(ref.mol,
+        PruningScheme::Unpruned, BatchSize(512), RadialQuad::MuraKnowles,
+        AtomicGridSizeDefault::UltraFineGrid);
+      auto lb = LoadBalancerFactory( ExecutionSpace::Host, "Default" )
+        .get_instance( rt, ref.mol, mg, ref.bases );
+      MolecularWeightsFactory( ExecutionSpace::Host, "Default",
+        MolecularWeightsSettings{} ).get_instance().modify_weights(lb);
+
+      MultiParticleFunctionalSpec spec;
+      MultiParticleXCTerms terms;
+      spec.intra_functionals.resize( ref.nspecies() );
+      spec.intra_functionals[0].push_back( std::make_shared<functional_type>(func) );
+      for( size_t p = 0; p < ref.nspecies(); ++p ) {
+        terms.active_intra.push_back(p);
+        terms.vxc_targets.push_back(p);
+      }
+      for( size_t i = 0; i < ref.nprot(); ++i ) {
+        spec.inter_functionals.push_back( MultiParticlePairFunctional{ 0, i+1,
+          { std::make_shared<functional_type>(epc_func) } } );
+        terms.active_inter.push_back(i);
+      }
+
+      IntegratorSettingsEXC_GRAD gs;
+      gs.include_weight_derivatives = true;
+      auto run = [&]( ExecutionSpace ex ) {
+        auto integrator = XCIntegratorFactory<matrix_type>( ex, "Replicated",
+          "Default", "Default", "Default" ).get_instance( func, lb );
+        return std::make_pair( integrator.eval_exc_vxc( densities, spec, terms ),
+          integrator.eval_exc_grad( densities, spec, terms, gs ) );
+      };
+      auto [ host_result,   host_grad   ] = run( ExecutionSpace::Host );
+      auto [ device_result, device_grad ] = run( ExecutionSpace::Device );
+
+      auto exc_approx = []( double x ) { return Approx(x).epsilon(1e-10).margin(1e-14); };
+      for( size_t p = 0; p < ref.nspecies(); ++p ) {
+        INFO( "species " << p );
+        const auto nbf = ref.bases[p].nbf();
+        CHECK( device_result.intra_exc[p] == exc_approx(host_result.intra_exc[p]) );
+        CHECK( (device_result.VXCs[p] - host_result.VXCs[p]).norm() / nbf < 1e-10 );
+        if( p ) CHECK( (device_result.VXCz[p] - host_result.VXCz[p]).norm() / nbf < 1e-10 );
+      }
+      for( size_t i = 0; i < ref.nprot(); ++i )
+        CHECK( device_result.inter_pair_exc[i] == exc_approx(host_result.inter_pair_exc[i]) );
+
+      REQUIRE( device_grad.size() == host_grad.size() );
+      double grad_diff = 0.;
+      for( size_t k = 0; k < host_grad.size(); ++k )
+        grad_diff += std::pow( device_grad[k] - host_grad[k], 2 );
+      CHECK( std::sqrt( grad_diff / host_grad.size() ) < 1e-8 );
+    };
+
+    auto blyp_func  = make_functional(blyp,    unpol);
+    auto svwn5_func = make_functional(svwn5,   unpol);
+    auto epcfunc    = make_functional(epc17_2, pol);
+    // GGA and LDA branches of the spin-compensated evaluation
+    host_vs_device( GAUXC_REF_DATA_PATH "/hcn_blyp_epc17-2_cc-pvdz_pb4d_ssf.hdf5",
+      blyp_func, epcfunc );
+    host_vs_device( GAUXC_REF_DATA_PATH "/coh2_svwn5_epc17-2_sto-3g_protsp_ssf.hdf5",
+      svwn5_func, epcfunc );
+  }
+#endif
 }

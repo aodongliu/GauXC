@@ -18,7 +18,8 @@ struct AoSScheme1MAGMABase : public AoSScheme1Base {
 
   void eval_xmat( double fac, XCDeviceData*, bool do_grad, density_id den ) override final;
   void eval_exx_fmat( XCDeviceData* ) override final;
-  void inc_vxc( XCDeviceData*, density_id den, bool ) override final;
+  void inc_vxc( XCDeviceData*, density_id den, bool,
+    const std::vector<task_work_range>& ) override final;
   void inc_exx_k( XCDeviceData* ) override final;
   bool supports_multiparticle() const override final { return false; }
 

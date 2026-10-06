@@ -527,7 +527,7 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
           else         lwd->eval_zmat_lda_vxc( &device_data, scheme, den_id, range );
         }
         stage.next( "vxc syr2k" );
-        lwd->inc_vxc( &device_data, den_id, false );
+        lwd->inc_vxc( &device_data, den_id, false, batch.task_work_ranges );
       };
       do_zmat_vxc( DEN_S );
       if( two_channel ) do_zmat_vxc( DEN_Z );

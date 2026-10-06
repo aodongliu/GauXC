@@ -1596,7 +1596,9 @@ void AoSScheme1Base::eval_kern_exc_vxc_mgga( const functional_type& func,
 
 
 void AoSScheme1Base::gather_pair_densities( XCDeviceData* _data ) {
-
+#ifdef GAUXC_HAS_HIP
+  GAUXC_GENERIC_EXCEPTION("MultiParticle pair XC NYI for HIP Backends");
+#else
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
@@ -1616,6 +1618,7 @@ void AoSScheme1Base::gather_pair_densities( XCDeviceData* _data ) {
     data->device_backend_->queue() );
 
   data->device_backend_->check_error("gather pair densities" __FILE__ ": " + std::to_string(__LINE__));
+#endif
 }
 
 
@@ -1645,7 +1648,9 @@ void AoSScheme1Base::eval_pair_functional( const functional_type& func,
 
 
 void AoSScheme1Base::scatter_pair_potential( XCDeviceData* _data ) {
-
+#ifdef GAUXC_HAS_HIP
+  GAUXC_GENERIC_EXCEPTION("MultiParticle pair XC NYI for HIP Backends");
+#else
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
@@ -1665,11 +1670,14 @@ void AoSScheme1Base::scatter_pair_potential( XCDeviceData* _data ) {
     data->device_backend_->queue() );
 
   data->device_backend_->check_error("scatter pair potential" __FILE__ ": " + std::to_string(__LINE__));
+#endif
 }
 
 
 void AoSScheme1Base::sum_pair_energy( XCDeviceData* _data ) {
-
+#ifdef GAUXC_HAS_HIP
+  GAUXC_GENERIC_EXCEPTION("MultiParticle pair EXC NYI for HIP Backends");
+#else
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
@@ -1686,11 +1694,14 @@ void AoSScheme1Base::sum_pair_energy( XCDeviceData* _data ) {
     data->device_backend_->queue() );
 
   data->device_backend_->check_error("sum pair energy" __FILE__ ": " + std::to_string(__LINE__));
+#endif
 }
 
 
 void AoSScheme1Base::accumulate_w_times_f( XCDeviceData* _data ) {
-
+#ifdef GAUXC_HAS_HIP
+  GAUXC_GENERIC_EXCEPTION("MultiParticle EXC Gradient NYI for HIP Backends");
+#else
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
@@ -1711,6 +1722,7 @@ void AoSScheme1Base::accumulate_w_times_f( XCDeviceData* _data ) {
     pair_stack.density_device, data->w_times_f_device_, queue );
 
   data->device_backend_->check_error("accumulate w times f" __FILE__ ": " + std::to_string(__LINE__));
+#endif
 }
 
 
@@ -2005,7 +2017,8 @@ void AoSScheme1Base::inc_potential_impl( XCDeviceData* _data, density_id den_sel
 }
 
 
-void AoSScheme1Base::inc_vxc( XCDeviceData* _data, density_id den_selector, bool do_m ){
+void AoSScheme1Base::inc_vxc( XCDeviceData* _data, density_id den_selector, bool do_m,
+  const std::vector<task_work_range>& ){
   inc_potential_impl<false>(_data, den_selector, do_m);
 }
 

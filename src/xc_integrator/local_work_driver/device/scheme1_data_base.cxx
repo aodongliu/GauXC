@@ -302,7 +302,7 @@ void Scheme1DataBase::pack_and_send(
   if(reqt.grid_to_center_dist_nearest) {
 
     // Pack on host
-    if( multiparticle_active_ ) {
+    if( terms.shared_grid ) {
       dist_nearest_pack.assign( grid_npts_, 0.0 );
       size_t itask = 0;
       for( auto it = task_begin; it != task_end; ++it, ++itask )
@@ -327,7 +327,7 @@ void Scheme1DataBase::pack_and_send(
   if(reqt.grid_to_parent_center) {
 
     // Pack on host
-    if( multiparticle_active_ ) {
+    if( terms.shared_grid ) {
       iparent_pack.assign( grid_npts_, 0 );
       size_t itask = 0;
       for( auto it = task_begin; it != task_end; ++it, ++itask )

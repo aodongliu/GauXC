@@ -116,7 +116,9 @@ public:
   /// Accumulate EXC over `range` into `accumulator`; the default is the call's one accumulator
   void inc_exc( XCDeviceData*, point_work_range = {}, double* accumulator = nullptr );
   void inc_nel( XCDeviceData*, point_work_range = {} );
-  void inc_vxc( XCDeviceData*, density_id, bool do_m = false );
+  /// VXC += B Z^T + Z B^T per task; CUTLASS launches one syr2k per work range given
+  void inc_vxc( XCDeviceData*, density_id, bool do_m = false,
+    const std::vector<task_work_range>& = {} );
   void inc_fxc( XCDeviceData*, density_id, bool do_m = false );
   void inc_exc_grad_lda( XCDeviceData*, integrator_ks_scheme, bool );
   void inc_exc_grad_gga( XCDeviceData*, integrator_ks_scheme, bool );

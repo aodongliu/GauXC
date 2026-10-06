@@ -69,7 +69,8 @@ struct LocalDeviceWorkDriverPIMPL {
   virtual void eval_mmat_mgga_fxc( XCDeviceData*, bool, density_id ) = 0;
   virtual void inc_exc( XCDeviceData*, point_work_range, double* accumulator ) = 0;
   virtual void inc_nel( XCDeviceData*, point_work_range ) = 0;
-  virtual void inc_vxc( XCDeviceData* , density_id, bool) = 0;
+  virtual void inc_vxc( XCDeviceData* , density_id, bool,
+    const std::vector<task_work_range>& ) = 0;
   virtual void inc_fxc( XCDeviceData* , density_id, bool) = 0;  
   virtual void inc_exc_grad_lda( XCDeviceData*, integrator_ks_scheme, bool  ) = 0;
   virtual void inc_exc_grad_gga( XCDeviceData*, integrator_ks_scheme, bool  ) = 0;

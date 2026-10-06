@@ -116,7 +116,8 @@ void AoSScheme1MAGMABase::eval_exx_fmat( XCDeviceData* _data ) {
 #endif
 }
 
-void AoSScheme1MAGMABase::inc_vxc( XCDeviceData* _data, density_id den, bool do_m){
+void AoSScheme1MAGMABase::inc_vxc( XCDeviceData* _data, density_id den, bool do_m,
+  const std::vector<task_work_range>& ){
 
   auto* data = dynamic_cast<Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();

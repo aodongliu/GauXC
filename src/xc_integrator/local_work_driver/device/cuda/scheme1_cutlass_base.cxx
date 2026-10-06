@@ -117,7 +117,8 @@ void AoSScheme1CUTLASSBase::eval_xmat_trial(double fac, XCDeviceData* _data, boo
 
 // Common implementation for inc_vxc and inc_fxc
 template<bool is_fxc>
-void AoSScheme1CUTLASSBase::inc_potential_impl(XCDeviceData* _data, density_id den_id, bool do_m) {
+void AoSScheme1CUTLASSBase::inc_potential_impl(XCDeviceData* _data, density_id den_id, bool do_m,
+  const std::vector<task_work_range>& work_ranges) {
   auto* data = dynamic_cast<AoSScheme1CUTLASSBase::Data*>(_data);
   if( !data ) GAUXC_BAD_LWD_DATA_CAST();
 
@@ -127,7 +128,6 @@ void AoSScheme1CUTLASSBase::inc_potential_impl(XCDeviceData* _data, density_id d
   const auto ntasks = tasks.size();
 
   auto cutlass_stack = data->cutlass_stack;
-  const auto& work_ranges = data->task_work_ranges_;
 
   // V += A Z^T + Z A^T over every task, in one grouped call, or one call per
   // work range with the executor of the range's syr2k size class
@@ -219,12 +219,13 @@ void AoSScheme1CUTLASSBase::inc_potential_impl(XCDeviceData* _data, density_id d
     submat_block_size, data->device_backend_->queue() );
 }
 
-void AoSScheme1CUTLASSBase::inc_vxc( XCDeviceData* _data, density_id den_id, bool do_m ) {
-  inc_potential_impl<false>(_data, den_id, do_m);
+void AoSScheme1CUTLASSBase::inc_vxc( XCDeviceData* _data, density_id den_id, bool do_m,
+  const std::vector<task_work_range>& work_ranges ) {
+  inc_potential_impl<false>(_data, den_id, do_m, work_ranges);
 }
 
 void AoSScheme1CUTLASSBase::inc_fxc( XCDeviceData* _data, density_id den_id, bool do_m ) {
-  inc_potential_impl<true>(_data, den_id, do_m);
+  inc_potential_impl<true>(_data, den_id, do_m, {});
 }
 
 }

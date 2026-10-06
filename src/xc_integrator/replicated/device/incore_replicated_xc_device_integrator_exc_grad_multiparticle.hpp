@@ -163,18 +163,22 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
 
   // ---- The union basis, the storage shape and the block-diagonal density
   phase.next( "setup: union basis" );
-  std::vector<species_basis_range> species_basis_ranges;
-  BasisSet<double> union_basis = multiparticle_device_detail::build_union_basis(
-    tracker, *this->load_balancer_, species_basis_ranges );
-  const int32_t nbf_union     = static_cast<int32_t>( union_basis.nbf() );
-  const int32_t nshells_union = static_cast<int32_t>( union_basis.nshells() );
-
   auto shape = multiparticle_device_detail::resolve_storage_shape( tracker,
     densities );
   shape.terms.exc_grad = true;
   shape.terms.weights  = do_weight_derivatives;
   const bool is_gga      = shape.is_gga();
   const bool two_channel = shape.two_channel();
+
+  auto& setup = this->multiparticle_exc_grad_setup_;
+  const bool build_layout = multiparticle_device_detail::update_setup( setup,
+    tracker, shape.terms, *this->load_balancer_, task_begin, task_end );
+  const auto& species_basis_ranges = setup.species_basis_ranges;
+  const auto& union_basis          = setup.union_basis;
+  const auto& union_basis_map      = *setup.union_basis_map;
+  auto&       layout               = setup.layout;
+  const int32_t nbf_union     = static_cast<int32_t>( union_basis.nbf() );
+  const int32_t nshells_union = static_cast<int32_t>( union_basis.nshells() );
 
   phase.next( "setup: union density" );
   std::vector<double> Ps_union, Pz_union;
@@ -194,13 +198,13 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   }
   device_data.zero_exc_grad_integrands();
 
-  BasisSetMap union_basis_map( union_basis, mol );
-
   // ---- The species-task list and its batches
   phase.next( "setup: species tasks" );
-  multiparticle_layout layout;
-  device_data.build_species_tasks( shape.terms, tracker, species_basis_ranges,
-    union_basis_map, task_begin, task_end, layout );
+  if( build_layout ) {
+    device_data.build_species_tasks( shape.terms, tracker, species_basis_ranges,
+      union_basis_map, task_begin, task_end, layout );
+    setup.valid = true;
+  }
 
   phase.end();
 

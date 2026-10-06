@@ -19,6 +19,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
+#include <numeric>
 #include <vector>
 
 namespace GauXC  {
@@ -234,12 +236,57 @@ inline void build_union_density( const multiparticle_tracker& tracker,
 }
 
 /// Stable sort of the grid tasks by XCTask::cost_exc_vxc, which sums over the species
+/// Each cost is evaluated once; a list already in order is left in place
 inline void sort_tasks_by_cost( std::vector<XCTask>::iterator task_begin,
   std::vector<XCTask>::iterator task_end ) {
-  std::stable_sort( task_begin, task_end,
-    []( const XCTask& a, const XCTask& b ) {
-      return a.cost_exc_vxc(0) > b.cost_exc_vxc(0);
-    });
+  const size_t ntasks = std::distance( task_begin, task_end );
+  std::vector<size_t> cost( ntasks );
+  std::transform( task_begin, task_end, cost.begin(),
+    []( const XCTask& task ) { return task.cost_exc_vxc(0); } );
+  if( std::is_sorted( cost.begin(), cost.end(), std::greater<size_t>() ) ) return;
+
+  std::vector<size_t> order( ntasks );
+  std::iota( order.begin(), order.end(), size_t(0) );
+  std::stable_sort( order.begin(), order.end(),
+    [&]( size_t i, size_t j ) { return cost[i] > cost[j]; } );
+
+  std::vector<XCTask> sorted;
+  sorted.reserve( ntasks );
+  for( auto i : order ) sorted.push_back( std::move( task_begin[i] ) );
+  std::move( sorted.begin(), sorted.end(), task_begin );
+}
+
+/// Keep the setup when its key matches this call, else rebuild the union
+/// basis and its map. Returns whether the species-task layout must be rebuilt
+inline bool update_setup( multiparticle_setup& setup,
+  const multiparticle_tracker& tracker, integrator_term_tracker terms,
+  const LoadBalancer& load_balancer,
+  std::vector<XCTask>::iterator task_begin,
+  std::vector<XCTask>::iterator task_end ) {
+
+  std::vector<const void*> task_ids = { task_begin == task_end ? nullptr : &*task_begin };
+  for( auto task = task_begin; task != task_end; ++task )
+    task_ids.push_back( task->points.data() );
+
+  std::vector<int64_t> call_key = { tracker.do_vxc, terms.weights, terms.exc_vxc,
+    terms.exc_grad, terms.xc_approx, terms.ks_scheme };
+  for( const auto& species : tracker.species )
+    call_key.insert( call_key.end(), { species.participates, species.has_intra_functional } );
+  for( const auto& pair : tracker.pairs )
+    call_key.insert( call_key.end(), { pair.active, int64_t(pair.electron),
+      int64_t(pair.particle), int64_t(pair.functional_group) } );
+
+  if( setup.valid and task_ids == setup.task_ids and call_key == setup.call_key )
+    return false;
+
+  setup.valid    = false;
+  setup.task_ids = std::move( task_ids );
+  setup.call_key = std::move( call_key );
+  setup.union_basis = build_union_basis( tracker, load_balancer,
+    setup.species_basis_ranges );
+  setup.union_basis_map.emplace( setup.union_basis, load_balancer.molecule() );
+  setup.layout = multiparticle_layout{};
+  return true;
 }
 
 } // namespace multiparticle_device_detail
@@ -413,18 +460,22 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
 
   // ---- The union basis, the storage shape and the block-diagonal density
   phase.next( "setup: union basis" );
-  std::vector<species_basis_range> species_basis_ranges;
-  BasisSet<double> union_basis = multiparticle_device_detail::build_union_basis(
-    tracker, *this->load_balancer_, species_basis_ranges );
-  const int32_t nbf_union         = static_cast<int32_t>( union_basis.nbf() );
-  const int32_t nshells_union     = static_cast<int32_t>( union_basis.nshells() );
-  const size_t  nbf_union_squared = size_t(nbf_union) * size_t(nbf_union);
-
   auto shape = multiparticle_device_detail::resolve_storage_shape( tracker,
     densities );
   shape.terms.exc_vxc = true;
   const bool is_gga      = shape.is_gga();
   const bool two_channel = shape.two_channel();
+
+  auto& setup = this->multiparticle_exc_vxc_setup_;
+  const bool build_layout = multiparticle_device_detail::update_setup( setup,
+    tracker, shape.terms, *this->load_balancer_, task_begin, task_end );
+  const auto& species_basis_ranges = setup.species_basis_ranges;
+  const auto& union_basis          = setup.union_basis;
+  const auto& union_basis_map      = *setup.union_basis_map;
+  auto&       layout               = setup.layout;
+  const int32_t nbf_union         = static_cast<int32_t>( union_basis.nbf() );
+  const int32_t nshells_union     = static_cast<int32_t>( union_basis.nshells() );
+  const size_t  nbf_union_squared = size_t(nbf_union) * size_t(nbf_union);
 
   phase.next( "setup: union density" );
   std::vector<double> Ps_union, Pz_union;
@@ -441,13 +492,13 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
   device_data.zero_exc_vxc_integrands( shape.terms );
   device_data.allocate_static_data_multiparticle( nspecies, npairs );
 
-  BasisSetMap union_basis_map( union_basis, this->load_balancer_->molecule() );
-
   // ---- The species-task list and its batches
   phase.next( "setup: species tasks" );
-  multiparticle_layout layout;
-  device_data.build_species_tasks( shape.terms, tracker, species_basis_ranges,
-    union_basis_map, task_begin, task_end, layout );
+  if( build_layout ) {
+    device_data.build_species_tasks( shape.terms, tracker, species_basis_ranges,
+      union_basis_map, task_begin, task_end, layout );
+    setup.valid = true;
+  }
 
   phase.end();
 
@@ -495,7 +546,6 @@ void IncoreReplicatedXCDeviceIntegrator<ValueType>::
         lwd->eval_kern_exc_vxc_lda( *call.intra_functionals[p], &device_data, points );
       stage.next( "intra energy" );
       lwd->inc_exc( &device_data, points, device_data.intra_exc_device_data(p) );
-      lwd->inc_nel( &device_data, points );
     }
 
     //-------------- C: the pair stage, over the batch's pairs --------------

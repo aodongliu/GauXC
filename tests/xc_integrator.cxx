@@ -589,6 +589,16 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
       CHECK( (result.VXCz[i+1] - prot_VXCz_ref[i]).norm() / pnbf < 1e-10 );
   }
 
+  // A second call (EXC/VXC here, the gradient below) reuses the setup the
+  // device integrator kept from the first
+  if( ex == ExecutionSpace::Device ) {
+    auto again = integrator.eval_exc_vxc( densities, spec, terms );
+    for( size_t p = 0; p < nspecies; ++p ) {
+      CHECK( again.intra_exc[p] == exc_approx(result.intra_exc[p]) );
+      CHECK( (again.VXCs[p] - result.VXCs[p]).norm() / bases[p].nbf() < 1e-12 );
+    }
+  }
+
   // The EXC gradient, weight derivatives included
   std::vector<double> EXC_GRAD_full;
   auto neo_exc_grad = [&]( auto& itg, bool weight_derivatives ) {
@@ -609,6 +619,10 @@ void test_neo_xc_integrator( ExecutionSpace ex, const RuntimeEnvironment& rt,
       CHECK( EXC_GRAD_diff_nrm / std::sqrt(3.0*mol.size()) < 1e-8 );
     };
     check_exc_grad( EXC_GRAD_full, EXC_GRAD_ref_Full );
+    if( ex == ExecutionSpace::Device ) {
+      auto again = neo_exc_grad( integrator, true );
+      check_exc_grad( again, EXC_GRAD_ref_Full );
+    }
 
     // Without weight derivatives
     auto EXC_GRAD_HellFey = neo_exc_grad( integrator, false );

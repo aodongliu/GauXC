@@ -12,9 +12,24 @@
 #pragma once
 #include <gauxc/xc_integrator/replicated/replicated_xc_device_integrator.hpp>
 #include "device/xc_device_data.hpp"
+#include <optional>
 
 namespace GauXC {
 namespace detail {
+
+/// The density-independent setup of a multiparticle call, kept across calls:
+/// the union basis, its map and the species-task layout. It holds while the
+/// grid tasks (the same tasks in the same order), the participating species,
+/// the active pairs and the storage terms are unchanged
+struct multiparticle_setup {
+  bool                             valid = false;
+  std::vector<const void*>         task_ids;             ///< the task array, then per grid task its points' storage, which moves with the task
+  std::vector<int64_t>             call_key;             ///< the storage terms, the species and the pairs
+  std::vector<species_basis_range> species_basis_ranges; ///< where each species starts in the union basis
+  BasisSet<double>                 union_basis;          ///< the participating species' shells, concatenated
+  std::optional<BasisSetMap>       union_basis_map;      ///< the map of the union basis
+  multiparticle_layout             layout;               ///< the species-task list and its batches
+};
 
 template <typename ValueType>
 class IncoreReplicatedXCDeviceIntegrator : 
@@ -198,7 +213,9 @@ protected:
                                   host_task_iterator task_begin, host_task_iterator task_end,
                                   XCDeviceData& device_data, const IntegratorSettingsXC& settings );
 
-
+  /// Multiparticle setups kept across calls: one for EXC/VXC, one for the gradient
+  multiparticle_setup multiparticle_exc_vxc_setup_;
+  multiparticle_setup multiparticle_exc_grad_setup_;
 
   void exx_local_work_( const basis_type& basis, const value_type* P, int64_t ldp, 
                         host_task_iterator task_begin, host_task_iterator task_end,

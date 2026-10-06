@@ -46,28 +46,33 @@ __global__ void eval_vvar_lda_kern( size_t        ntasks,
 
   const auto* den_basis_prod_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
+  // Loop bounds are uniform across a warp so every lane joins the reduction
+  for( int bid_x = blockIdx.x * blockDim.x; bid_x < nbf; bid_x += blockDim.x * gridDim.x )
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < npts; tid_y += blockDim.y * gridDim.y ) {
 
-  register double den_reg = 0.;
+    const int tid_x = bid_x + threadIdx.x;
 
-  if( tid_x < nbf and tid_y < npts ) {
+    register double den_reg = 0.;
 
-    const double* bf_col   = basis_eval_device     + tid_x*npts;
-    const double* db_col   = den_basis_prod_device + tid_x*npts;
+    if( tid_x < nbf and tid_y < npts ) {
 
-    den_reg = bf_col[ tid_y ]   * db_col[ tid_y ];
+      const double* bf_col   = basis_eval_device     + tid_x*npts;
+      const double* db_col   = den_basis_prod_device + tid_x*npts;
 
-  }
+      den_reg = bf_col[ tid_y ]   * db_col[ tid_y ];
 
-  // Warp blocks are stored col major
-  constexpr auto warp_size = cuda::warp_size;
-  //constexpr auto max_warps_per_thread_block = cuda::max_warps_per_thread_block;
-  den_reg = cuda::warp_reduce_sum<warp_size>( den_reg );
+    }
+
+    // Warp blocks are stored col major
+    constexpr auto warp_size = cuda::warp_size;
+    //constexpr auto max_warps_per_thread_block = cuda::max_warps_per_thread_block;
+    den_reg = cuda::warp_reduce_sum<warp_size>( den_reg );
 
 
-  if( threadIdx.x == 0 and tid_y < npts ) {
-    atomicAdd( den_eval_device   + tid_y, den_reg );
+    if( threadIdx.x == 0 and tid_y < npts ) {
+      atomicAdd( den_eval_device   + tid_y, den_reg );
+    }
+
   }
   
 }

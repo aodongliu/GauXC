@@ -92,8 +92,8 @@ template<bool trial>
 void eval_vvars_lda_impl( size_t ntasks, int32_t nbf_max, int32_t npts_max, density_id den_select,
   XCDeviceTask* device_tasks, device_queue queue ) {
   dim3 threads( cuda::warp_size, cuda::max_warps_per_thread_block, 1 );
-  dim3 blocks( util::div_ceil( nbf_max,  threads.x ),
-               util::div_ceil( npts_max, threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( nbf_max,  threads.x ), cuda::max_task_blocks_basis_functions ),
+               std::min<uint32_t>( util::div_ceil( npts_max, threads.y ), cuda::max_task_blocks_points ),
                ntasks );
   EVAL_VVARS_KERNEL(lda);
 }
@@ -126,8 +126,8 @@ template<bool trial>
 void eval_vvars_gga_impl( size_t ntasks, int32_t nbf_max, int32_t npts_max, density_id den_select,
   XCDeviceTask* device_tasks, device_queue queue ) {
   dim3 threads( cuda::warp_size, cuda::max_warps_per_thread_block, 1 );
-  dim3 blocks( util::div_ceil( nbf_max,  threads.x ),
-               util::div_ceil( npts_max, threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( nbf_max,  threads.x ), cuda::max_task_blocks_basis_functions ),
+               std::min<uint32_t>( util::div_ceil( npts_max, threads.y ), cuda::max_task_blocks_points ),
                ntasks );
   EVAL_VVARS_KERNEL(gga);
 }
@@ -192,8 +192,8 @@ void eval_vvars_mgga_impl( size_t ntasks, int32_t nbf_max, int32_t npts_max, den
   eval_vvars_gga_impl<trial>(ntasks, nbf_max, npts_max, den_select, device_tasks, queue);
 
   dim3 threads( cuda::warp_size, cuda::max_warps_per_thread_block, 1 );
-  dim3 blocks( util::div_ceil( nbf_max,  threads.x ),
-               util::div_ceil( npts_max, threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( nbf_max,  threads.x ), cuda::max_task_blocks_basis_functions ),
+               std::min<uint32_t>( util::div_ceil( npts_max, threads.y ), cuda::max_task_blocks_points ),
                ntasks );
 
   cudaStream_t stream = queue.queue_as<util::cuda_stream>();

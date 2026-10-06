@@ -18,7 +18,7 @@ namespace GauXC {
 
 
 template<density_id den_selector>
-__global__ void zmat_lda_fxc_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_lda_fxc_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -33,10 +33,8 @@ __global__ void zmat_lda_fxc_kernel( size_t        ntasks,
   const auto* basis_eval_device = task.bf;
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
     const double fact = 0.5 * FXC_A_device[tid_x];
@@ -51,7 +49,7 @@ __global__ void zmat_lda_fxc_kernel( size_t        ntasks,
 
 
 template<density_id den_selector>
-__global__ void zmat_gga_fxc_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_gga_fxc_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -78,10 +76,8 @@ __global__ void zmat_gga_fxc_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
 
@@ -99,8 +95,8 @@ __global__ void zmat_gga_fxc_kernel( size_t        ntasks,
 #define ZMAT_FXC_KERN(xc_approx) \
   cudaStream_t stream = queue.queue_as<util::cuda_stream>(); \
   dim3 threads(cuda::warp_size,cuda::max_warps_per_thread_block,1); \
-  dim3 blocks( util::div_ceil( max_npts, threads.x ), \
-               util::div_ceil( max_nbf,  threads.y ), \
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( max_npts, threads.x ), cuda::max_task_blocks_points ), \
+               std::min<uint32_t>( util::div_ceil( max_nbf,  threads.y ), cuda::max_task_blocks_basis_functions ), \
                ntasks ); \
   if ( sel == DEN_S )       zmat_##xc_approx##_fxc_kernel<DEN_S><<< blocks, threads, 0, stream >>>( ntasks, tasks_device ); \
   else if ( sel == DEN_Z )  zmat_##xc_approx##_fxc_kernel<DEN_Z><<< blocks, threads, 0, stream >>>( ntasks, tasks_device ); \
@@ -141,8 +137,8 @@ void zmat_mgga_fxc( size_t            ntasks,
 
 
   dim3 threads(cuda::warp_size,cuda::max_warps_per_thread_block,1);
-  dim3 blocks( util::div_ceil( max_npts, threads.x ),
-               util::div_ceil( max_nbf,  threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( max_npts, threads.x ), cuda::max_task_blocks_points ),
+               std::min<uint32_t>( util::div_ceil( max_nbf,  threads.y ), cuda::max_task_blocks_basis_functions ),
                ntasks );
 
   if(do_lapl)
@@ -169,7 +165,7 @@ void zmat_mgga_fxc( size_t            ntasks,
 
 
 template <density_id id>
-__global__ void mmat_mgga_fxc_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void mmat_mgga_fxc_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -189,10 +185,8 @@ __global__ void mmat_mgga_fxc_kernel( size_t        ntasks,
   auto* mmat_y = task.xmat_y;
   auto* mmat_z = task.xmat_z;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
 
@@ -216,8 +210,8 @@ void mmat_mgga_fxc( size_t            ntasks,
 
 
   dim3 threads(cuda::warp_size,cuda::max_warps_per_thread_block,1);
-  dim3 blocks( util::div_ceil( max_npts, threads.x ),
-               util::div_ceil( max_nbf,  threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( max_npts, threads.x ), cuda::max_task_blocks_points ),
+               std::min<uint32_t>( util::div_ceil( max_nbf,  threads.y ), cuda::max_task_blocks_basis_functions ),
                ntasks );
 
   if(do_lapl)

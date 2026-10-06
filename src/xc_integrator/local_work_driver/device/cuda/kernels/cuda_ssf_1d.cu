@@ -65,7 +65,7 @@ __global__ void modify_weights_ssf_kernel_1d(
     double sum = 0.; 
     double parent_weight = 0.;
 
-    const double* const local_dist_scratch = dist_scratch + ipt * lddist;
+    const double* const local_dist_scratch = dist_scratch + size_t(ipt) * lddist;
     const double dist_cutoff = 0.5 * (1 - integrator::magic_ssf_factor<> ) * 
       dist_nearest_device[ipt];
     if( local_dist_scratch[iParent] < dist_cutoff ) continue;
@@ -203,7 +203,7 @@ __global__ void eval_weight_1st_deriv_contracted_ssf_kernel_1d(
     double sum = 0.; 
     double parent_weight = 0.;
 
-    const double* const local_dist_scratch = dist_scratch + ipt * lddist;
+    const double* const local_dist_scratch = dist_scratch + size_t(ipt) * lddist;
     const double dist_cutoff = 0.18 * dist_nearest_device[ipt]; // 0.5 * (1-integrator::magic_ssf_factor<>) * task.dist_nearest
     if( local_dist_scratch[iParent] < dist_cutoff ) continue; //weight derivative = 0 when p_A = 1
 

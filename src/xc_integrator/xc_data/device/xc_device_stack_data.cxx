@@ -738,6 +738,9 @@ XCDeviceStackData::host_task_iterator XCDeviceStackData::generate_buffers(
   host_task_iterator task_it = task_begin;
   while( task_it != task_end ) {
 
+    // Break out of loop if the batch holds the maximum number of tasks
+    if( size_t(std::distance(task_begin, task_it)) == max_tasks_per_batch ) break;
+
     // Get memory requirement for batch
     size_t mem_req_batch = get_mem_req( terms, *task_it );
 
@@ -1464,8 +1467,11 @@ void XCDeviceStackData::build_species_tasks( integrator_term_tracker terms,
     while( igrid_task < ngrid_tasks ) {
       size_t bytes_left = bytes_available;
       const size_t first = igrid_task;
-      while( igrid_task < ngrid_tasks and grid_task_bytes[igrid_task] <= bytes_left ) {
+      size_t batch_species_tasks = 0;
+      while( igrid_task < ngrid_tasks and grid_task_bytes[igrid_task] <= bytes_left and
+             batch_species_tasks + grid_task_species_count[igrid_task] <= max_tasks_per_batch ) {
         bytes_left -= grid_task_bytes[igrid_task];
+        batch_species_tasks += grid_task_species_count[igrid_task];
         igrid_task++;
       }
       if( igrid_task == first )

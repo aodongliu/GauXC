@@ -17,7 +17,7 @@
 namespace GauXC {
 
 
-__global__ void zmat_lda_vxc_rks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_lda_vxc_rks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -32,10 +32,8 @@ __global__ void zmat_lda_vxc_rks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
     const double fact = 0.5 * vrho_device[tid_x];
@@ -59,7 +57,7 @@ __global__ void zmat_lda_vxc_rks_kernel( size_t        ntasks,
 
 
 template<density_id den_selector>
-__global__ void zmat_lda_vxc_uks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_lda_vxc_uks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -77,10 +75,8 @@ __global__ void zmat_lda_vxc_uks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
     const double factp = 0.5 * vrho_pos_device[tid_x];
@@ -94,7 +90,7 @@ __global__ void zmat_lda_vxc_uks_kernel( size_t        ntasks,
 }
 
 template<density_id den_selector>
-__global__ void zmat_lda_vxc_gks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_lda_vxc_gks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -118,10 +114,8 @@ __global__ void zmat_lda_vxc_gks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
     const size_t ibfoff = tid_y * npts + tid_x;
     const double factp = 0.5 * vrho_pos_device[tid_x];
     const double factm = 0.5 * vrho_neg_device[tid_x];
@@ -145,7 +139,7 @@ __global__ void zmat_lda_vxc_gks_kernel( size_t        ntasks,
 
 
 
-__global__ void zmat_gga_vxc_rks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_gga_vxc_rks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -167,10 +161,8 @@ __global__ void zmat_gga_vxc_rks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
     const double fact_1 = 0.5 * vrho_device[tid_x]  ;
@@ -194,7 +186,7 @@ __global__ void zmat_gga_vxc_rks_kernel( size_t        ntasks,
 
 
 template<density_id den_selector>
-__global__ void zmat_gga_vxc_uks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_gga_vxc_uks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -225,10 +217,8 @@ __global__ void zmat_gga_vxc_uks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
 
@@ -273,7 +263,7 @@ __global__ void zmat_gga_vxc_uks_kernel( size_t        ntasks,
 
 
 template<density_id den_selector>
-__global__ void zmat_gga_vxc_gks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_gga_vxc_gks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -318,10 +308,8 @@ __global__ void zmat_gga_vxc_gks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
 
@@ -401,7 +389,7 @@ __global__ void zmat_gga_vxc_gks_kernel( size_t        ntasks,
 
 
 template <bool need_lapl>
-__global__ void zmat_mgga_vxc_rks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_mgga_vxc_rks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -427,10 +415,8 @@ __global__ void zmat_mgga_vxc_rks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
     const double fact_1 = 0.5 * vrho_device[tid_x]  ;
@@ -452,7 +438,7 @@ __global__ void zmat_mgga_vxc_rks_kernel( size_t        ntasks,
 }
 
 template<bool need_lapl, density_id den_selector>
-__global__ void zmat_mgga_vxc_uks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void zmat_mgga_vxc_uks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -486,10 +472,8 @@ __global__ void zmat_mgga_vxc_uks_kernel( size_t        ntasks,
 
   auto* z_matrix_device = task.zmat;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
 
@@ -541,8 +525,8 @@ __global__ void zmat_mgga_vxc_uks_kernel( size_t        ntasks,
 #define ZMAT_VXC_KERN(xc_approx) \
   cudaStream_t stream = queue.queue_as<util::cuda_stream>(); \
   dim3 threads(cuda::warp_size,cuda::max_warps_per_thread_block,1); \
-  dim3 blocks( util::div_ceil( max_npts, threads.x ), \
-               util::div_ceil( max_nbf,  threads.y ), \
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( max_npts, threads.x ), cuda::max_task_blocks_points ), \
+               std::min<uint32_t>( util::div_ceil( max_nbf,  threads.y ), cuda::max_task_blocks_basis_functions ), \
                ntasks ); \
   switch( scheme ) { \
     case RKS: \
@@ -603,8 +587,8 @@ void zmat_mgga_vxc( size_t            ntasks,
 
 
   dim3 threads(cuda::warp_size,cuda::max_warps_per_thread_block,1);
-  dim3 blocks( util::div_ceil( max_npts, threads.x ),
-               util::div_ceil( max_nbf,  threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( max_npts, threads.x ), cuda::max_task_blocks_points ),
+               std::min<uint32_t>( util::div_ceil( max_nbf,  threads.y ), cuda::max_task_blocks_basis_functions ),
                ntasks );
 
   if(scheme == RKS) {
@@ -649,7 +633,7 @@ void zmat_mgga_vxc( size_t            ntasks,
 
 
 template <bool need_lapl>
-__global__ void mmat_mgga_vxc_rks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void mmat_mgga_vxc_rks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -669,10 +653,8 @@ __global__ void mmat_mgga_vxc_rks_kernel( size_t        ntasks,
   auto* mmat_y = task.xmat_y;
   auto* mmat_z = task.xmat_z;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     const size_t ibfoff = tid_y * npts + tid_x;
     const double fact_1 = 0.25 * vtau_device[tid_x] + 
@@ -685,7 +667,7 @@ __global__ void mmat_mgga_vxc_rks_kernel( size_t        ntasks,
 }
 
 template <bool need_lapl, density_id id>
-__global__ void mmat_mgga_vxc_uks_kernel( size_t        ntasks,
+__global__ __launch_bounds__(1024,1) void mmat_mgga_vxc_uks_kernel( size_t        ntasks,
                                      XCDeviceTask* tasks_device ) {
 
   const int batch_idx = blockIdx.z;
@@ -707,10 +689,8 @@ __global__ void mmat_mgga_vxc_uks_kernel( size_t        ntasks,
   auto* mmat_y = task.xmat_y;
   auto* mmat_z = task.xmat_z;
 
-  const int tid_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int tid_y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if( tid_x < npts and tid_y < nbf ) {
+  for( int tid_y = blockIdx.y * blockDim.y + threadIdx.y; tid_y < nbf;  tid_y += blockDim.y * gridDim.y )
+  for( int tid_x = blockIdx.x * blockDim.x + threadIdx.x; tid_x < npts; tid_x += blockDim.x * gridDim.x ) {
 
     double sign = 1.0;
     if(id == DEN_Z) sign = -1;
@@ -795,8 +775,8 @@ void mmat_mgga_vxc( size_t            ntasks,
 
 
   dim3 threads(cuda::warp_size,cuda::max_warps_per_thread_block,1);
-  dim3 blocks( util::div_ceil( max_npts, threads.x ),
-               util::div_ceil( max_nbf,  threads.y ),
+  dim3 blocks( std::min<uint32_t>( util::div_ceil( max_npts, threads.x ), cuda::max_task_blocks_points ),
+               std::min<uint32_t>( util::div_ceil( max_nbf,  threads.y ), cuda::max_task_blocks_basis_functions ),
                ntasks );
 
   if(scheme == RKS) {

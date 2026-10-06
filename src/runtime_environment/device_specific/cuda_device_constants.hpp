@@ -20,6 +20,12 @@ static constexpr uint32_t max_threads_per_thread_block = 1024;
 static constexpr uint32_t max_warps_per_thread_block = 
   max_threads_per_thread_block / warp_size;
 
+// A batch mixes tasks of very different sizes. The V-variable and Z-matrix
+// kernels grid-stride over basis functions and points, so their per-task grid
+// is sized for a typical task (128 functions x 512 points), not the largest.
+static constexpr uint32_t max_task_blocks_basis_functions = 4;
+static constexpr uint32_t max_task_blocks_points          = 16;
+
 }
 
 }

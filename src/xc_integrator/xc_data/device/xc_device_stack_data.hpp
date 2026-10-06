@@ -37,6 +37,9 @@ struct XCDeviceStackData : public XCDeviceData {
   using XCDeviceData::host_task_container;
   using XCDeviceData::host_task_iterator;
 
+  /// CUDA and HIP cap gridDim.z, which the per-task kernels index by task, at 65 535
+  static constexpr size_t max_tasks_per_batch = 65535;
+
   allocated_dims global_dims; ///< Global dimensions for allocated data structures
   integrator_term_tracker allocated_terms;
   
